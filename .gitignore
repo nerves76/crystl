@@ -1,0 +1,10 @@
+# Compiled binary
+Apprvr
+*.o
+*.dSYM/
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
