@@ -1,7 +1,15 @@
 # Compiled binary
-Apprvr
+/Crystl
+/Apprvr
 *.o
 *.dSYM/
+
+# Build artifacts
+.build/
+
+# Nextcloud sync conflicts
+.conflicts/
+*(conflicted copy*
 
 # macOS
 .DS_Store

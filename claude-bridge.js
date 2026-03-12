@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-// Claude Code <-> Snackbar Bridge Server
+// Claude Code <-> Crystl Bridge Server
 // Receives PermissionRequest hooks from Claude Code via HTTP
-// Snackbar extension polls for pending requests and sends decisions via HTTP
+// Crystl polls for pending requests and sends decisions via HTTP
 
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 
 const PORT = parseInt(process.env.CLAUDE_BRIDGE_PORT || '19280', 10);
 const TIMEOUT_MS = 60000; // 60s before falling through to normal prompt
@@ -18,6 +20,91 @@ const MAX_HISTORY = 50;
 let requestCounter = 0;
 let pollerConnected = false;
 let lastPollTime = 0;
+
+// ── Sessions ──
+
+// Active sessions: session_id -> { cwd, permission_mode, lastSeen, requestCount }
+const activeSessions = new Map();
+const SESSION_TIMEOUT_MS = 300000; // 5 min without activity = stale
+
+function trackSession(hookData) {
+  const sid = hookData.session_id;
+  if (!sid) return;
+  const existing = activeSessions.get(sid) || { requestCount: 0 };
+  activeSessions.set(sid, {
+    cwd: hookData.cwd || existing.cwd || '',
+    permission_mode: hookData.permission_mode || existing.permission_mode || '',
+    lastSeen: Date.now(),
+    requestCount: existing.requestCount + 1
+  });
+}
+
+// Clean stale sessions periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [sid, s] of activeSessions) {
+    if (now - s.lastSeen > SESSION_TIMEOUT_MS) {
+      activeSessions.delete(sid);
+    }
+  }
+}, 30000);
+
+// ── Settings ──
+
+const SETTINGS_PATH = path.join(__dirname, 'crystl-settings.json');
+
+const DEFAULT_SETTINGS = {
+  autoApproveMode: 'manual', // 'manual' | 'smart' | 'all'
+  paused: false,
+  sessionOverrides: {} // session_id -> 'manual' | 'smart' | 'all'
+};
+
+// Tools considered safe for read-only operations
+const READ_ONLY_TOOLS = ['Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'Agent', 'Explore'];
+
+// Tools auto-approved when Claude Code is in acceptEdits mode
+const EDIT_SAFE_TOOLS = [...READ_ONLY_TOOLS, 'Edit', 'Write', 'NotebookEdit'];
+
+function loadSettings() {
+  try {
+    if (fs.existsSync(SETTINGS_PATH)) {
+      return { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(SETTINGS_PATH, 'utf8')) };
+    }
+  } catch (e) {
+    log(`Error loading settings: ${e.message}`);
+  }
+  return { ...DEFAULT_SETTINGS };
+}
+
+function saveSettings(settings) {
+  fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2));
+}
+
+let settings = loadSettings();
+
+function shouldAutoApprove(hookData) {
+  if (settings.paused) return false; // kill switch — fall through to all prompts
+
+  // Check per-session override first, then global mode
+  const sid = hookData.session_id || '';
+  const mode = (sid && settings.sessionOverrides[sid]) || settings.autoApproveMode;
+
+  if (mode === 'manual') return false;
+  if (mode === 'all') return true;
+
+  // Smart mode: check permission_mode + tool_name
+  const permMode = hookData.permission_mode;
+  const toolName = hookData.tool_name || '';
+
+  if (permMode === 'bypassPermissions' || permMode === 'dontAsk') {
+    return true;
+  }
+  if (permMode === 'acceptEdits') {
+    return EDIT_SAFE_TOOLS.includes(toolName);
+  }
+  // plan, default, or unknown — only read-only tools
+  return READ_ONLY_TOOLS.includes(toolName);
+}
 
 // ── HTTP Server ──
 
@@ -59,8 +146,26 @@ const server = http.createServer((req, res) => {
         created: req.created
       });
     }
+    // Build sessions list
+    const sessions = [];
+    for (const [sid, s] of activeSessions) {
+      sessions.push({
+        session_id: sid,
+        cwd: s.cwd,
+        permission_mode: s.permission_mode,
+        lastSeen: s.lastSeen,
+        requestCount: s.requestCount,
+        override: settings.sessionOverrides[sid] || null
+      });
+    }
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ pending, history: recentDecisions.slice(0, 20) }));
+    res.end(JSON.stringify({
+      pending,
+      sessions,
+      history: recentDecisions.slice(0, MAX_HISTORY),
+      settings
+    }));
     return;
   }
 
@@ -80,6 +185,8 @@ const server = http.createServer((req, res) => {
             id,
             tool_name: pending.data.tool_name || 'Unknown',
             tool_input: pending.data.tool_input || {},
+            cwd: pending.data.cwd || '',
+            session_id: pending.data.session_id || '',
             decision,
             timestamp: Date.now()
           });
@@ -99,6 +206,62 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Get settings
+  if (req.method === 'GET' && req.url === '/settings') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(settings));
+    return;
+  }
+
+  // Update settings
+  if (req.method === 'POST' && req.url === '/settings') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const update = JSON.parse(body);
+        const validModes = ['manual', 'smart', 'all'];
+        let changed = false;
+
+        if (update.autoApproveMode && validModes.includes(update.autoApproveMode)) {
+          settings.autoApproveMode = update.autoApproveMode;
+          changed = true;
+        }
+        if (typeof update.paused === 'boolean') {
+          settings.paused = update.paused;
+          changed = true;
+          log(`Bridge ${settings.paused ? 'PAUSED' : 'RESUMED'}`);
+        }
+        if (update.sessionOverride) {
+          const { session_id, mode } = update.sessionOverride;
+          if (session_id && (mode === null || validModes.includes(mode))) {
+            if (mode === null) {
+              delete settings.sessionOverrides[session_id];
+              log(`Removed override for session ${session_id.slice(0, 8)}`);
+            } else {
+              settings.sessionOverrides[session_id] = mode;
+              log(`Session ${session_id.slice(0, 8)} override: ${mode}`);
+            }
+            changed = true;
+          }
+        }
+
+        if (changed) {
+          saveSettings(settings);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(settings));
+        } else {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'No valid settings to update' }));
+        }
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      }
+    });
+    return;
+  }
+
   // Claude Code PermissionRequest hook endpoint
   if (req.method === 'POST' && req.url === '/hook') {
     let body = '';
@@ -109,8 +272,39 @@ const server = http.createServer((req, res) => {
         const id = String(++requestCounter);
         const toolName = hookData.tool_name || 'Unknown';
 
-        log(`Permission request: ${toolName} (${id})`);
-        log(`Hook payload: ${JSON.stringify(hookData).slice(0, 500)}`);
+        log(`Permission request: ${toolName} (${id}) [mode: ${hookData.permission_mode || '?'}]`);
+
+        // Track session
+        trackSession(hookData);
+
+        // Kill switch — fall through to normal terminal prompt
+        if (settings.paused) {
+          log(`Paused, falling through: ${toolName} (${id})`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({}));
+          return;
+        }
+
+        // Check auto-approve settings
+        if (shouldAutoApprove(hookData)) {
+          log(`Auto-approved: ${toolName} (${id}) [${settings.autoApproveMode} mode]`);
+          recentDecisions.unshift({
+            id, tool_name: toolName,
+            tool_input: hookData.tool_input || {},
+            cwd: hookData.cwd || '',
+            session_id: hookData.session_id || '',
+            decision: 'auto-approved', timestamp: Date.now()
+          });
+          if (recentDecisions.length > MAX_HISTORY) recentDecisions.pop();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: 'PermissionRequest',
+              decision: { behavior: 'allow' }
+            }
+          }));
+          return;
+        }
 
         // If no poller connected recently, fall through to normal prompt
         if (!pollerConnected) {
@@ -128,6 +322,8 @@ const server = http.createServer((req, res) => {
             recentDecisions.unshift({
               id, tool_name: toolName,
               tool_input: hookData.tool_input || {},
+              cwd: hookData.cwd || '',
+              session_id: hookData.session_id || '',
               decision: 'expired', timestamp: Date.now()
             });
             if (recentDecisions.length > MAX_HISTORY) recentDecisions.pop();
@@ -155,7 +351,7 @@ const server = http.createServer((req, res) => {
             res.end(JSON.stringify({
               hookSpecificOutput: {
                 hookEventName: 'PermissionRequest',
-                decision: { behavior: 'deny', message: 'Denied from Snackbar' }
+                decision: { behavior: 'deny', message: 'Denied from Crystl' }
               }
             }));
           } else {

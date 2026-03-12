@@ -3,51 +3,55 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="$HOME/Applications"
-BRIDGE_LABEL="com.apprvr.claude-bridge"
+BRIDGE_LABEL="com.crystl.claude-bridge"
 BRIDGE_PLIST="$HOME/Library/LaunchAgents/$BRIDGE_LABEL.plist"
 
-echo "==> Building Apprvr..."
+echo "==> Building Crystl (Swift Package)..."
 
-# Compile Swift menu bar app
-swiftc -O -o "$SCRIPT_DIR/Apprvr" \
-  -framework Cocoa \
-  "$SCRIPT_DIR/Apprvr.swift"
+cd "$SCRIPT_DIR"
+swift build -c release 2>&1
+
+BUILT_BIN="$(swift build -c release --show-bin-path)/Crystl"
 
 echo "==> Installing to $INSTALL_DIR..."
 
 mkdir -p "$INSTALL_DIR"
 
-# Create minimal .app bundle for Apprvr
-APP_DIR="$INSTALL_DIR/Apprvr.app"
+# Create .app bundle
+APP_DIR="$INSTALL_DIR/Crystl.app"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
-cp "$SCRIPT_DIR/Apprvr" "$APP_DIR/Contents/MacOS/Apprvr"
+cp "$BUILT_BIN" "$APP_DIR/Contents/MacOS/Crystl"
 
-# Info.plist for the app
+# Copy logo assets into Resources
+if [ -d "$SCRIPT_DIR/logo" ]; then
+    cp "$SCRIPT_DIR"/logo/*.png "$APP_DIR/Contents/Resources/" 2>/dev/null || true
+    cp "$SCRIPT_DIR"/logo/*.icns "$APP_DIR/Contents/Resources/" 2>/dev/null || true
+fi
+
+# Info.plist — regular app (shows in dock)
 cat > "$APP_DIR/Contents/Info.plist" << 'PLISTEOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.apprvr.app</string>
+    <string>com.crystl.app</string>
     <key>CFBundleName</key>
-    <string>Apprvr</string>
+    <string>Crystl</string>
     <key>CFBundleExecutable</key>
-    <string>Apprvr</string>
+    <string>Crystl</string>
     <key>CFBundleVersion</key>
-    <string>1.0</string>
-    <key>LSUIElement</key>
-    <true/>
+    <string>2.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
 </dict>
 </plist>
 PLISTEOF
 
-echo "==> Apprvr.app installed to $APP_DIR"
+echo "==> Crystl.app installed to $APP_DIR"
 
 # ── Claude Bridge ──
 
@@ -67,8 +71,9 @@ echo "==> Installing Claude Bridge..."
 
 cp "$SCRIPT_DIR/claude-bridge.js" "$BRIDGE_DEST"
 
-# Unload existing agent if running
+# Unload existing agent if running (try both old and new labels)
 launchctl unload "$BRIDGE_PLIST" 2>/dev/null || true
+launchctl unload "$HOME/Library/LaunchAgents/com.apprvr.claude-bridge.plist" 2>/dev/null || true
 
 # Generate LaunchAgent plist
 cat > "$BRIDGE_PLIST" << LAEOF
@@ -99,13 +104,5 @@ launchctl load "$BRIDGE_PLIST"
 
 echo "==> Claude Bridge running on port 19280"
 echo ""
-echo "==> Done! To start Apprvr:"
+echo "==> Done! To start Crystl:"
 echo "    open $APP_DIR"
-echo ""
-echo "Add to ~/.claude/settings.json:"
-echo '  "hooks": {'
-echo '    "PermissionRequest": [{'
-echo '      "matcher": "*",'
-echo '      "hooks": [{ "type": "http", "url": "http://127.0.0.1:19280/hook" }]'
-echo '    }]'
-echo '  }'

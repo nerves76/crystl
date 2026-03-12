@@ -15,8 +15,35 @@ struct PendingRequest: Codable, Equatable {
     }
 }
 
+struct BridgeSettings: Codable {
+    var autoApproveMode: String
+    var paused: Bool?
+    var sessionOverrides: [String: String]?
+}
+
+struct SessionInfo: Codable {
+    let session_id: String
+    let cwd: String?
+    let permission_mode: String?
+    let lastSeen: Double
+    let requestCount: Int
+    let override: String?
+}
+
+struct HistoryEntry: Codable {
+    let id: String
+    let tool_name: String
+    let cwd: String?
+    let session_id: String?
+    let decision: String
+    let timestamp: Double
+}
+
 struct PollResponse: Codable {
     let pending: [PendingRequest]
+    let sessions: [SessionInfo]?
+    let history: [HistoryEntry]?
+    let settings: BridgeSettings?
 }
 
 struct DecisionBody: Codable {
@@ -55,15 +82,81 @@ struct AnyCodable: Codable, Equatable {
     }
 }
 
+// ── Helpers ──
+
+let sessionColors: [NSColor] = [
+    NSColor.systemGreen,
+    NSColor.systemBlue,
+    NSColor.systemPurple,
+    NSColor.systemOrange,
+    NSColor.systemPink,
+    NSColor.systemTeal,
+    NSColor.systemYellow,
+    NSColor.systemIndigo
+]
+
+// Stable mapping from session_id to color index (persists across polls)
+var sessionColorMap: [String: Int] = [:]
+var nextColorIndex = 0
+
+func colorForSession(_ sessionId: String?) -> NSColor {
+    guard let sid = sessionId, !sid.isEmpty else { return NSColor.systemGreen }
+    if let idx = sessionColorMap[sid] {
+        return sessionColors[idx % sessionColors.count]
+    }
+    let idx = nextColorIndex
+    sessionColorMap[sid] = idx
+    nextColorIndex += 1
+    return sessionColors[idx % sessionColors.count]
+}
+
+class GlowView: NSView {
+    var color: NSColor = .systemGreen
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let colors = [
+            color.withAlphaComponent(0.5).cgColor,
+            color.withAlphaComponent(0.15).cgColor,
+            color.withAlphaComponent(0.0).cgColor
+        ] as CFArray
+        let locations: [CGFloat] = [0.0, 0.35, 1.0]
+        guard let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: locations) else { return }
+        ctx.drawLinearGradient(gradient, start: CGPoint(x: bounds.midX, y: bounds.maxY), end: CGPoint(x: bounds.midX, y: bounds.minY), options: [])
+    }
+}
+
+func roundedMaskImage(size: NSSize, radius: CGFloat) -> NSImage {
+    NSImage(size: size, flipped: false) { rect in
+        let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+        NSColor.black.setFill()
+        path.fill()
+        return true
+    }
+}
+
 // ── App Delegate ──
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var pollTimer: Timer?
     var panels: [String: NSPanel] = [:]
+    var allowAllPanel: NSPanel?
     var knownIds: Set<String> = []
+    var pendingIds: [String] = [] // ordered list for Allow All
     let bridgePort = 19280
     var isConnected = false
+    var currentMode: String = "manual"
+    var modeMenuItems: [String: NSMenuItem] = [:]
+    var settingsPill: NSPanel?
+    var settingsModeLabel: NSTextField?
+    var settingsDot: NSView?
+    var pauseIcon: NSTextField?
+    var sessionCountLabel: NSTextField?
+    var dashboardPanel: NSPanel?
+    var currentSessions: [SessionInfo] = []
+    var currentHistory: [HistoryEntry] = []
+    var isPaused: Bool = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu bar icon
@@ -93,6 +186,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenuItem.tag = 100
         menu.addItem(statusMenuItem)
         menu.addItem(NSMenuItem.separator())
+
+        // Mode header
+        let modeHeader = NSMenuItem(title: "Approval Mode", action: nil, keyEquivalent: "")
+        modeHeader.isEnabled = false
+        menu.addItem(modeHeader)
+
+        let manualItem = NSMenuItem(title: "  Manual — Ask for each request", action: #selector(setManualMode), keyEquivalent: "")
+        manualItem.state = .on
+        modeMenuItems["manual"] = manualItem
+        menu.addItem(manualItem)
+
+        let smartItem = NSMenuItem(title: "  Smart — Auto-approve safe tools", action: #selector(setSmartMode), keyEquivalent: "")
+        modeMenuItems["smart"] = smartItem
+        menu.addItem(smartItem)
+
+        let allItem = NSMenuItem(title: "  Auto-approve All ⚠️", action: #selector(setAllMode), keyEquivalent: "")
+        modeMenuItems["all"] = allItem
+        menu.addItem(allItem)
+
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
 
@@ -101,10 +214,486 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.poll()
         }
         poll()
+
+        // Show floating settings pill
+        showSettingsPill()
     }
 
     @objc func quit() {
         NSApplication.shared.terminate(nil)
+    }
+
+    // ── Mode Switching ──
+
+    @objc func setManualMode() { updateMode("manual") }
+    @objc func setSmartMode() { updateMode("smart") }
+
+    @objc func setAllMode() {
+        let alert = NSAlert()
+        alert.messageText = "Enable Auto-approve All?"
+        alert.informativeText = "This will automatically approve ALL tool requests without prompting, including file writes, bash commands, and other potentially dangerous operations.\n\nOnly use this if you fully trust the current Claude Code sessions."
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Enable")
+        alert.addButton(withTitle: "Cancel")
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            updateMode("all")
+        }
+    }
+
+    func updateMode(_ mode: String) {
+        guard let url = URL(string: "http://127.0.0.1:\(bridgePort)/settings") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = "{\"autoApproveMode\":\"\(mode)\"}".data(using: .utf8)
+
+        URLSession.shared.dataTask(with: req) { [weak self] data, _, error in
+            DispatchQueue.main.async {
+                if error == nil {
+                    self?.applyModeUI(mode)
+                }
+            }
+        }.resume()
+    }
+
+    func applyModeUI(_ mode: String) {
+        currentMode = mode
+        for (key, item) in modeMenuItems {
+            item.state = key == mode ? .on : .off
+        }
+        updateSettingsPill(mode)
+    }
+
+    // ── Settings Pill ──
+
+    func modeDisplayName(_ mode: String) -> String {
+        switch mode {
+        case "smart": return "Smart"
+        case "all": return "Auto-All"
+        default: return "Manual"
+        }
+    }
+
+    func modeColor(_ mode: String) -> NSColor {
+        switch mode {
+        case "smart": return NSColor.systemBlue
+        case "all": return NSColor.systemOrange
+        default: return NSColor.systemGreen
+        }
+    }
+
+    func showSettingsPill() {
+        let pillWidth: CGFloat = 180
+        let pillHeight: CGFloat = 28
+
+        guard let screen = NSScreen.main else { return }
+        let screenFrame = screen.visibleFrame
+        let x: CGFloat = 16
+        let y: CGFloat = screenFrame.origin.y + 16
+
+        let panel = NSPanel(
+            contentRect: NSRect(x: x, y: y, width: pillWidth, height: pillHeight),
+            styleMask: [.nonactivatingPanel, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.isMovableByWindowBackground = true
+        panel.titlebarAppearsTransparent = true
+        panel.titleVisibility = .hidden
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+
+        let glass = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: pillWidth, height: pillHeight))
+        glass.material = .hudWindow
+        glass.blendingMode = .behindWindow
+        glass.state = .active
+        glass.maskImage = roundedMaskImage(size: NSSize(width: pillWidth, height: pillHeight), radius: pillHeight / 2)
+        glass.wantsLayer = true
+        glass.layer?.borderWidth = 0.5
+        glass.layer?.borderColor = NSColor(white: 1.0, alpha: 0.12).cgColor
+
+        // Colored dot indicator
+        let dot = NSView(frame: NSRect(x: 10, y: (pillHeight - 8) / 2, width: 8, height: 8))
+        dot.wantsLayer = true
+        dot.layer?.cornerRadius = 4
+        dot.layer?.backgroundColor = modeColor(currentMode).cgColor
+        glass.addSubview(dot)
+        settingsDot = dot
+
+        // Mode label (clickable to cycle)
+        let label = NSTextField(labelWithString: modeDisplayName(currentMode))
+        label.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        label.textColor = NSColor(white: 1.0, alpha: 0.7)
+        label.frame = NSRect(x: 24, y: (pillHeight - 14) / 2, width: 60, height: 14)
+        glass.addSubview(label)
+        settingsModeLabel = label
+
+        let modeBtn = NSButton(frame: NSRect(x: 0, y: 0, width: 88, height: pillHeight))
+        modeBtn.title = ""
+        modeBtn.bezelStyle = .rounded
+        modeBtn.isBordered = false
+        modeBtn.isTransparent = true
+        modeBtn.target = self
+        modeBtn.action = #selector(settingsPillClicked)
+        glass.addSubview(modeBtn)
+
+        // Divider
+        let divider = NSView(frame: NSRect(x: 88, y: 6, width: 1, height: pillHeight - 12))
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.15).cgColor
+        glass.addSubview(divider)
+
+        // Session count
+        let sessLabel = NSTextField(labelWithString: "0")
+        sessLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        sessLabel.textColor = NSColor(white: 1.0, alpha: 0.5)
+        sessLabel.frame = NSRect(x: 96, y: (pillHeight - 14) / 2, width: 36, height: 14)
+        glass.addSubview(sessLabel)
+        sessionCountLabel = sessLabel
+
+        let dashBtn = NSButton(frame: NSRect(x: 88, y: 0, width: 48, height: pillHeight))
+        dashBtn.title = ""
+        dashBtn.bezelStyle = .rounded
+        dashBtn.isBordered = false
+        dashBtn.isTransparent = true
+        dashBtn.target = self
+        dashBtn.action = #selector(dashboardClicked)
+        glass.addSubview(dashBtn)
+
+        // Divider 2
+        let divider2 = NSView(frame: NSRect(x: 140, y: 6, width: 1, height: pillHeight - 12))
+        divider2.wantsLayer = true
+        divider2.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.15).cgColor
+        glass.addSubview(divider2)
+
+        // Pause button
+        let pauseLabel = NSTextField(labelWithString: "||")
+        pauseLabel.font = NSFont.systemFont(ofSize: 10, weight: .bold)
+        pauseLabel.textColor = NSColor(white: 1.0, alpha: 0.5)
+        pauseLabel.alignment = .center
+        pauseLabel.frame = NSRect(x: 148, y: (pillHeight - 14) / 2, width: 24, height: 14)
+        glass.addSubview(pauseLabel)
+        pauseIcon = pauseLabel
+
+        let pauseBtn = NSButton(frame: NSRect(x: 140, y: 0, width: 40, height: pillHeight))
+        pauseBtn.title = ""
+        pauseBtn.bezelStyle = .rounded
+        pauseBtn.isBordered = false
+        pauseBtn.isTransparent = true
+        pauseBtn.target = self
+        pauseBtn.action = #selector(pauseClicked)
+        glass.addSubview(pauseBtn)
+
+        panel.contentView = glass
+        panel.orderFrontRegardless()
+        settingsPill = panel
+
+        // Fade in
+        panel.alphaValue = 0
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.3
+            panel.animator().alphaValue = 1
+        }
+    }
+
+    func updateSettingsPill(_ mode: String) {
+        settingsModeLabel?.stringValue = modeDisplayName(mode)
+        settingsDot?.layer?.backgroundColor = modeColor(mode).cgColor
+    }
+
+    func updateSessionCount() {
+        let count = currentSessions.count
+        sessionCountLabel?.stringValue = count == 1 ? "1 ses" : "\(count) ses"
+    }
+
+    func updatePauseState() {
+        if isPaused {
+            pauseIcon?.stringValue = ">"
+            pauseIcon?.textColor = NSColor.systemOrange
+            settingsPill?.contentView?.layer?.borderColor = NSColor.systemOrange.withAlphaComponent(0.4).cgColor
+        } else {
+            pauseIcon?.stringValue = "||"
+            pauseIcon?.textColor = NSColor(white: 1.0, alpha: 0.5)
+            settingsPill?.contentView?.layer?.borderColor = NSColor(white: 1.0, alpha: 0.12).cgColor
+        }
+    }
+
+    @objc func settingsPillClicked() {
+        switch currentMode {
+        case "manual":
+            updateMode("smart")
+        case "smart":
+            setAllMode()
+        case "all":
+            updateMode("manual")
+        default:
+            updateMode("manual")
+        }
+    }
+
+    @objc func pauseClicked() {
+        let newPaused = !isPaused
+        guard let url = URL(string: "http://127.0.0.1:\(bridgePort)/settings") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = "{\"paused\":\(newPaused)}".data(using: .utf8)
+        URLSession.shared.dataTask(with: req) { [weak self] _, _, _ in
+            DispatchQueue.main.async {
+                self?.isPaused = newPaused
+                self?.updatePauseState()
+            }
+        }.resume()
+    }
+
+    @objc func dashboardClicked() {
+        if dashboardPanel != nil {
+            dismissDashboard()
+        } else {
+            showDashboard()
+        }
+    }
+
+    // ── Dashboard Panel ──
+
+    func showDashboard() {
+        let dashWidth: CGFloat = 340
+        let dashHeight: CGFloat = 380
+
+        guard let screen = NSScreen.main else { return }
+        let screenFrame = screen.visibleFrame
+        let x: CGFloat = 16
+        let y: CGFloat = screenFrame.origin.y + 52
+
+        let panel = NSPanel(
+            contentRect: NSRect(x: x, y: y, width: dashWidth, height: dashHeight),
+            styleMask: [.nonactivatingPanel, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.isMovableByWindowBackground = true
+        panel.titlebarAppearsTransparent = true
+        panel.titleVisibility = .hidden
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+
+        let glass = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: dashWidth, height: dashHeight))
+        glass.material = .hudWindow
+        glass.blendingMode = .behindWindow
+        glass.state = .active
+        glass.maskImage = roundedMaskImage(size: NSSize(width: dashWidth, height: dashHeight), radius: 14)
+        glass.wantsLayer = true
+        glass.layer?.borderWidth = 0.5
+        glass.layer?.borderColor = NSColor(white: 1.0, alpha: 0.12).cgColor
+
+        var yOffset = dashHeight - 14
+
+        // ── Sessions Section ──
+        let sessHeader = NSTextField(labelWithString: "SESSIONS")
+        sessHeader.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        sessHeader.textColor = NSColor(white: 1.0, alpha: 0.35)
+        yOffset -= 14
+        sessHeader.frame = NSRect(x: 16, y: yOffset, width: dashWidth - 32, height: 14)
+        glass.addSubview(sessHeader)
+
+        if currentSessions.isEmpty {
+            yOffset -= 20
+            let noSess = NSTextField(labelWithString: "No active sessions")
+            noSess.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+            noSess.textColor = NSColor(white: 1.0, alpha: 0.3)
+            noSess.frame = NSRect(x: 16, y: yOffset, width: dashWidth - 32, height: 16)
+            glass.addSubview(noSess)
+        } else {
+            for session in currentSessions {
+                yOffset -= 36
+                let projectName = extractProjectName(session.cwd)
+                let sidShort = String(session.session_id.prefix(6))
+                let sessColor = colorForSession(session.session_id)
+
+                // Color dot
+                let dot = NSView(frame: NSRect(x: 16, y: yOffset + 18, width: 8, height: 8))
+                dot.wantsLayer = true
+                dot.layer?.cornerRadius = 4
+                dot.layer?.backgroundColor = sessColor.cgColor
+                glass.addSubview(dot)
+
+                // Project name
+                let projLabel = NSTextField(labelWithString: projectName.isEmpty ? sidShort : projectName)
+                projLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+                projLabel.textColor = .white
+                projLabel.frame = NSRect(x: 30, y: yOffset + 14, width: 146, height: 16)
+                glass.addSubview(projLabel)
+
+                // Permission mode + request count
+                let modeStr = session.override ?? session.permission_mode ?? "?"
+                let infoLabel = NSTextField(labelWithString: "\(modeStr) · \(session.requestCount) req")
+                infoLabel.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+                infoLabel.textColor = NSColor(white: 1.0, alpha: 0.4)
+                infoLabel.frame = NSRect(x: 30, y: yOffset, width: 146, height: 14)
+                glass.addSubview(infoLabel)
+
+                // Per-session mode cycle button
+                let overrideMode = session.override ?? "default"
+                let btnLabel: String
+                let btnColor: NSColor
+                switch overrideMode {
+                case "manual": btnLabel = "Manual"; btnColor = NSColor.systemGreen
+                case "smart": btnLabel = "Smart"; btnColor = NSColor.systemBlue
+                case "all": btnLabel = "Auto"; btnColor = NSColor.systemOrange
+                default: btnLabel = "Global"; btnColor = NSColor(white: 1.0, alpha: 0.3)
+                }
+
+                let overrideBtn = NSButton(frame: NSRect(x: dashWidth - 80, y: yOffset + 4, width: 60, height: 22))
+                overrideBtn.title = btnLabel
+                overrideBtn.bezelStyle = .rounded
+                overrideBtn.isBordered = false
+                overrideBtn.wantsLayer = true
+                overrideBtn.layer?.backgroundColor = btnColor.withAlphaComponent(0.2).cgColor
+                overrideBtn.layer?.cornerRadius = 6
+                overrideBtn.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+                overrideBtn.contentTintColor = btnColor
+                overrideBtn.target = self
+                overrideBtn.action = #selector(sessionOverrideClicked(_:))
+                overrideBtn.identifier = NSUserInterfaceItemIdentifier(session.session_id)
+                glass.addSubview(overrideBtn)
+
+                // Separator
+                yOffset -= 2
+                let sep = NSView(frame: NSRect(x: 16, y: yOffset, width: dashWidth - 32, height: 1))
+                sep.wantsLayer = true
+                sep.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.06).cgColor
+                glass.addSubview(sep)
+            }
+        }
+
+        // ── Activity Feed Section ──
+        yOffset -= 22
+        let actHeader = NSTextField(labelWithString: "RECENT ACTIVITY")
+        actHeader.font = NSFont.systemFont(ofSize: 10, weight: .semibold)
+        actHeader.textColor = NSColor(white: 1.0, alpha: 0.35)
+        actHeader.frame = NSRect(x: 16, y: yOffset, width: dashWidth - 32, height: 14)
+        glass.addSubview(actHeader)
+
+        let maxHistory = min(currentHistory.count, 8)
+        for i in 0..<maxHistory {
+            let entry = currentHistory[i]
+            yOffset -= 20
+
+            // Decision indicator
+            let indicator: String
+            let indicatorColor: NSColor
+            switch entry.decision {
+            case "allow": indicator = "✓"; indicatorColor = NSColor.systemGreen
+            case "deny": indicator = "✗"; indicatorColor = NSColor.systemRed
+            case "auto-approved": indicator = "⚡"; indicatorColor = NSColor.systemBlue
+            case "expired": indicator = "○"; indicatorColor = NSColor(white: 1.0, alpha: 0.3)
+            default: indicator = "?"; indicatorColor = NSColor(white: 1.0, alpha: 0.3)
+            }
+
+            let indLabel = NSTextField(labelWithString: indicator)
+            indLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+            indLabel.textColor = indicatorColor
+            indLabel.frame = NSRect(x: 16, y: yOffset, width: 16, height: 16)
+            glass.addSubview(indLabel)
+
+            // Session color bar
+            let entryColor = colorForSession(entry.session_id)
+            let colorBar = NSView(frame: NSRect(x: 34, y: yOffset + 1, width: 2, height: 12))
+            colorBar.wantsLayer = true
+            colorBar.layer?.cornerRadius = 1
+            colorBar.layer?.backgroundColor = entryColor.withAlphaComponent(0.6).cgColor
+            glass.addSubview(colorBar)
+
+            let toolLabel = NSTextField(labelWithString: entry.tool_name)
+            toolLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+            toolLabel.textColor = NSColor(white: 1.0, alpha: 0.6)
+            toolLabel.frame = NSRect(x: 42, y: yOffset, width: 130, height: 16)
+            glass.addSubview(toolLabel)
+
+            let timeAgo = formatTimeAgo(entry.timestamp)
+            let timeLabel = NSTextField(labelWithString: timeAgo)
+            timeLabel.font = NSFont.systemFont(ofSize: 9, weight: .regular)
+            timeLabel.textColor = NSColor(white: 1.0, alpha: 0.2)
+            timeLabel.alignment = .right
+            timeLabel.frame = NSRect(x: 180, y: yOffset, width: 50, height: 16)
+            glass.addSubview(timeLabel)
+        }
+
+        if currentHistory.isEmpty {
+            yOffset -= 18
+            let noHist = NSTextField(labelWithString: "No activity yet")
+            noHist.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+            noHist.textColor = NSColor(white: 1.0, alpha: 0.3)
+            noHist.frame = NSRect(x: 16, y: yOffset, width: dashWidth - 32, height: 16)
+            glass.addSubview(noHist)
+        }
+
+        panel.contentView = glass
+        panel.orderFrontRegardless()
+        dashboardPanel = panel
+
+        panel.alphaValue = 0
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            panel.animator().alphaValue = 1
+        }
+    }
+
+    func dismissDashboard() {
+        guard let panel = dashboardPanel else { return }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.15
+            panel.animator().alphaValue = 0
+        }, completionHandler: {
+            panel.close()
+            self.dashboardPanel = nil
+        })
+    }
+
+    @objc func sessionOverrideClicked(_ sender: NSButton) {
+        guard let sid = sender.identifier?.rawValue else { return }
+        let session = currentSessions.first { $0.session_id == sid }
+        let currentOverride = session?.override
+
+        // Cycle: global -> manual -> smart -> all -> global
+        let nextMode: String?
+        switch currentOverride {
+        case nil: nextMode = "manual"
+        case "manual": nextMode = "smart"
+        case "smart": nextMode = "all"
+        case "all": nextMode = nil
+        default: nextMode = nil
+        }
+
+        guard let url = URL(string: "http://127.0.0.1:\(bridgePort)/settings") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let modeVal = nextMode.map { "\"\($0)\"" } ?? "null"
+        req.httpBody = "{\"sessionOverride\":{\"session_id\":\"\(sid)\",\"mode\":\(modeVal)}}".data(using: .utf8)
+        URLSession.shared.dataTask(with: req) { [weak self] _, _, _ in
+            DispatchQueue.main.async {
+                // Refresh dashboard
+                self?.dismissDashboard()
+                self?.showDashboard()
+            }
+        }.resume()
+    }
+
+    func formatTimeAgo(_ timestamp: Double) -> String {
+        let seconds = Int((Date().timeIntervalSince1970 * 1000 - timestamp) / 1000)
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m" }
+        return "\(seconds / 3600)h"
     }
 
     func updateStatusMenu(connected: Bool, pendingCount: Int) {
@@ -166,6 +755,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     self.isConnected = true
                     self.updateStatusMenu(connected: true, pendingCount: resp.pending.count)
                     self.handlePending(resp.pending)
+                    if let s = resp.sessions { self.currentSessions = s }
+                    if let h = resp.history { self.currentHistory = h }
+                    if let s = resp.settings {
+                        self.applyModeUI(s.autoApproveMode)
+                        self.isPaused = s.paused ?? false
+                        self.updatePauseState()
+                    }
+                    self.updateSessionCount()
                 } else {
                     self.isConnected = false
                     self.updateStatusMenu(connected: false, pendingCount: 0)
@@ -190,6 +787,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         knownIds = currentIds
+        pendingIds = pending.map { $0.id }
+
+        // Show or hide Allow All bar
+        if panels.count >= 2 {
+            showAllowAllBar()
+        } else {
+            dismissAllowAllBar()
+        }
     }
 
     // ── Approval Panel ──
@@ -227,24 +832,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         glass.material = .hudWindow
         glass.blendingMode = .behindWindow
         glass.state = .active
+        glass.maskImage = roundedMaskImage(size: NSSize(width: panelWidth, height: panelHeight), radius: 14)
         glass.wantsLayer = true
-        glass.layer?.cornerRadius = 14
-        glass.layer?.masksToBounds = true
         glass.layer?.borderWidth = 0.5
         glass.layer?.borderColor = NSColor(white: 1.0, alpha: 0.12).cgColor
 
-        // Green accent line at top
-        let accent = NSView(frame: NSRect(x: 0, y: panelHeight - 2.5, width: panelWidth, height: 2.5))
-        accent.wantsLayer = true
-        accent.layer?.backgroundColor = NSColor.systemGreen.cgColor
-        glass.addSubview(accent)
+        // Session-colored glow at top
+        let sessColor = colorForSession(request.session_id)
+        let glow = GlowView(frame: NSRect(x: 0, y: panelHeight - 50, width: panelWidth, height: 50))
+        glow.color = sessColor
+        glass.addSubview(glow)
 
         // Project directory (from cwd)
         let projectName = extractProjectName(request.cwd)
         if !projectName.isEmpty {
             let dirLabel = NSTextField(labelWithString: projectName)
             dirLabel.font = NSFont.systemFont(ofSize: 10, weight: .medium)
-            dirLabel.textColor = NSColor.systemGreen.withAlphaComponent(0.8)
+            dirLabel.textColor = sessColor.withAlphaComponent(0.8)
             dirLabel.frame = NSRect(x: 16, y: panelHeight - 22, width: panelWidth - 80, height: 14)
             glass.addSubview(dirLabel)
         }
@@ -367,13 +971,107 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         for id in Array(panels.keys) {
             dismissPanel(id: id)
         }
+        dismissAllowAllBar()
+    }
+
+    // ── Allow All Bar ──
+
+    func showAllowAllBar() {
+        let barWidth: CGFloat = 340
+        let barHeight: CGFloat = 38
+
+        guard let screen = NSScreen.main else { return }
+        let screenFrame = screen.visibleFrame
+        let x: CGFloat = 16
+        let centerY = screenFrame.midY + (screenFrame.height * 0.1)
+        let y = centerY - (-barHeight / 2) + 24 // above the top panel
+
+        if let existing = allowAllPanel {
+            // Update count text
+            if let btn = existing.contentView?.subviews.compactMap({ $0 as? NSButton }).first {
+                btn.title = "Allow All (\(panels.count))"
+            }
+            // Reposition
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.2
+                existing.animator().setFrame(NSRect(x: x, y: y, width: barWidth, height: barHeight), display: true)
+            }
+            return
+        }
+
+        let panel = NSPanel(
+            contentRect: NSRect(x: x, y: y, width: barWidth, height: barHeight),
+            styleMask: [.nonactivatingPanel, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isFloatingPanel = true
+        panel.level = .floating
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.titlebarAppearsTransparent = true
+        panel.titleVisibility = .hidden
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+
+        let glass = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: barWidth, height: barHeight))
+        glass.material = .hudWindow
+        glass.blendingMode = .behindWindow
+        glass.state = .active
+        glass.maskImage = roundedMaskImage(size: NSSize(width: barWidth, height: barHeight), radius: 10)
+        glass.wantsLayer = true
+        glass.layer?.borderWidth = 0.5
+        glass.layer?.borderColor = NSColor.systemGreen.withAlphaComponent(0.3).cgColor
+
+        let allowAllBtn = NSButton(frame: NSRect(x: 0, y: 0, width: barWidth, height: barHeight))
+        allowAllBtn.title = "Allow All (\(panels.count))"
+        allowAllBtn.bezelStyle = .rounded
+        allowAllBtn.isBordered = false
+        allowAllBtn.wantsLayer = true
+        allowAllBtn.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.2).cgColor
+        allowAllBtn.layer?.cornerRadius = 10
+        allowAllBtn.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        allowAllBtn.contentTintColor = NSColor.systemGreen
+        allowAllBtn.target = self
+        allowAllBtn.action = #selector(allowAllClicked)
+        glass.addSubview(allowAllBtn)
+
+        panel.contentView = glass
+        panel.orderFrontRegardless()
+        allowAllPanel = panel
+
+        // Fade in
+        panel.alphaValue = 0
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            panel.animator().alphaValue = 1
+        }
+    }
+
+    func dismissAllowAllBar() {
+        guard let panel = allowAllPanel else { return }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.15
+            panel.animator().alphaValue = 0
+        }, completionHandler: {
+            panel.close()
+            self.allowAllPanel = nil
+        })
+    }
+
+    @objc func allowAllClicked() {
+        let ids = pendingIds
+        for id in ids {
+            sendDecision(id: id, decision: "allow")
+        }
+        dismissAllPanels()
     }
 
     func repositionPanels() {
         guard let screen = NSScreen.main else { return }
         let screenFrame = screen.visibleFrame
-        let panelWidth: CGFloat = 320
-        let panelHeight: CGFloat = 140
+        let panelWidth: CGFloat = 340
+        let panelHeight: CGFloat = 158
         let x: CGFloat = 16
         let centerY = screenFrame.midY + (screenFrame.height * 0.1)
 
@@ -386,6 +1084,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     display: true
                 )
             }
+        }
+
+        // Reposition Allow All bar if visible
+        if panels.count >= 2 {
+            showAllowAllBar()
+        } else {
+            dismissAllowAllBar()
         }
     }
 
