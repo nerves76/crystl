@@ -65,12 +65,12 @@ const DEFAULT_SETTINGS = {
   sessionOverrides: {}, // session_id -> 'manual' | 'smart' | 'all'
   enabledNotifications: {
     Stop: true,
-    PostToolUse: false,       // off by default (noisy)
-    SubagentStop: true,
-    TaskCompleted: true,
+    PostToolUse: false,
+    SubagentStop: false,
+    TaskCompleted: false,
     Notification: true,
-    TeammateIdle: true,
-    SessionEnd: true
+    TeammateIdle: false,
+    SessionEnd: false
   }
 };
 

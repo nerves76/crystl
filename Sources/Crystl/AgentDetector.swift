@@ -45,6 +45,7 @@ class AgentDetector {
     private static let knownBinaries: [(String, AgentKind)] = [
         ("claude", .claude),
         ("aider", .aider),
+        ("codex", .codex),
         ("goose", .goose),
     ]
 

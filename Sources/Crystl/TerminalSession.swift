@@ -171,11 +171,11 @@ class GlowButton: NSButton {
         if let text = hoverText, let parent = superview {
             let label = NSTextField(labelWithString: text)
             label.font = NSFont.systemFont(ofSize: 10, weight: .medium)
-            label.textColor = .white
+            label.textColor = NSColor(white: 1.0, alpha: 0.4)
             label.sizeToFit()
             let w = label.fittingSize.width
             let btnCenter = frame.midX
-            label.frame = NSRect(x: btnCenter - w / 2, y: frame.minY - 14, width: w, height: 12)
+            label.frame = NSRect(x: btnCenter - w / 2, y: frame.minY - 20, width: w, height: 12)
             parent.addSubview(label)
             hoverLabel = label
         }

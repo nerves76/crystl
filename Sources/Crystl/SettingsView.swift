@@ -52,6 +52,14 @@ extension TerminalWindowController {
         container.wantsLayer = true
         container.layer?.add(transition, forKey: "settingsFlip")
 
+        // Save instruction file templates if edited
+        if let textView = findView(in: settings, id: "claudeMdTemplate") as? NSTextView {
+            DefaultClaudeMd.save(textView.string)
+        }
+        if let textView = findView(in: settings, id: "agentsMdTemplate") as? NSTextView {
+            DefaultAgentsMd.save(textView.string)
+        }
+
         settings.removeFromSuperview()
         self.settingsView = nil
         for sub in container.subviews {
@@ -93,19 +101,14 @@ extension TerminalWindowController {
         let colWidth: CGFloat = 300
         let gap: CGFloat = 60
         let totalWidth = colWidth * 2 + gap
-        let leftX = (bounds.width - totalWidth) / 2
-        let rightX = leftX + colWidth + gap
-        let mask: NSView.AutoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
 
-        // Spacing constants — consistent vertical rhythm
-        // Note: gap must be >= controlH - labelH to prevent overlap
-        // (controls extend upward from their y origin in non-flipped NSView)
-        let sectionToHeader: CGFloat = 16  // section header to first field label
-        let labelToControl: CGFloat = 16   // label to its control (14+16=30 step, 30-28=2px gap)
-        let controlToLabel: CGFloat = 10   // control to next field label
-        let sectionBreak: CGFloat = 20     // control to next section header
-        let labelH: CGFloat = 14           // label text height
-        let controlH: CGFloat = 28         // standard control height
+        // Spacing constants
+        let sectionToHeader: CGFloat = 16
+        let labelToControl: CGFloat = 16
+        let controlToLabel: CGFloat = 10
+        let sectionBreak: CGFloat = 20
+        let labelH: CGFloat = 14
+        let controlH: CGFloat = 28
 
         // ── Title ──
         let title = NSTextField(labelWithString: "Settings")
@@ -116,76 +119,62 @@ extension TerminalWindowController {
         title.autoresizingMask = [.width, .minYMargin]
         view.addSubview(title)
 
+        // ── Scrollable content area ──
+        let scrollFrame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height - 100)
+        let settingsScroll = NSScrollView(frame: scrollFrame)
+        settingsScroll.hasVerticalScroller = true
+        settingsScroll.hasHorizontalScroller = false
+        settingsScroll.autohidesScrollers = true
+        settingsScroll.borderType = .noBorder
+        settingsScroll.drawsBackground = false
+        settingsScroll.autoresizingMask = [.width, .height]
+        settingsScroll.scrollerStyle = .overlay
+
+        let docHeight: CGFloat = 1100
+        let docView = NSView(frame: NSRect(x: 0, y: 0, width: bounds.width, height: docHeight))
+
+        let leftX = (bounds.width - totalWidth) / 2
+        let rightX = leftX + colWidth + gap
+
+        let claudeEnabled = UserDefaults.standard.object(forKey: "agentEnabled:claude") as? Bool ?? true
+        let codexEnabled = UserDefaults.standard.object(forKey: "agentEnabled:codex") as? Bool ?? false
+        let textEditorH: CGFloat = 100
+
         // ════════════════════════════════════════
-        // LEFT COLUMN — General
+        // LEFT COLUMN — Agent Settings
         // ════════════════════════════════════════
-        var yL = bounds.height - 120
+        var yL = docHeight - 20
 
-        let genLabel = NSTextField(labelWithString: "GENERAL")
-        genLabel.font = NSFont.systemFont(ofSize: 10, weight: .bold)
-        genLabel.textColor = labelColor
-        genLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: 14)
-        genLabel.autoresizingMask = mask
-        view.addSubview(genLabel)
-        yL -= (14 + sectionToHeader)
-
-        // ── Projects Directory ──
-        let projLabel = NSTextField(labelWithString: "DEFAULT PROJECTS DIRECTORY")
-        projLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
-        projLabel.textColor = labelColor
-        projLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
-        projLabel.autoresizingMask = mask
-        view.addSubview(projLabel)
-        yL -= (labelH + labelToControl)
-
-        let projDir = UserDefaults.standard.string(forKey: "projectsDirectory") ?? ""
-        let projDisplay = projDir.isEmpty ? "~/Projects" : (projDir as NSString).abbreviatingWithTildeInPath
-        let projField = NSTextField(string: projDisplay)
-        projField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        projField.textColor = .white
-        projField.backgroundColor = fieldBg
-        projField.isBordered = false
-        projField.isBezeled = false
-        projField.drawsBackground = true
-        projField.isEditable = false
-        projField.wantsLayer = true
-        projField.layer?.cornerRadius = 8
-        projField.layer?.masksToBounds = true
-        projField.frame = NSRect(x: leftX, y: yL, width: colWidth - 70, height: 28)
-        projField.identifier = NSUserInterfaceItemIdentifier("projectsDirField")
-        projField.autoresizingMask = mask
-        view.addSubview(projField)
-
-        let browseBtn = NSButton(frame: NSRect(x: leftX + colWidth - 64, y: yL, width: 64, height: 28))
-        browseBtn.title = "Browse"
-        browseBtn.bezelStyle = .rounded
-        browseBtn.isBordered = false
-        browseBtn.wantsLayer = true
-        browseBtn.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.1).cgColor
-        browseBtn.layer?.cornerRadius = 8
-        browseBtn.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        browseBtn.contentTintColor = .white
-        browseBtn.target = self
-        browseBtn.action = #selector(browseProjectsDir(_:))
-        browseBtn.autoresizingMask = mask
-        view.addSubview(browseBtn)
-        yL -= (controlH + sectionBreak)
+        let leftHeader = NSTextField(labelWithString: "AGENT SETTINGS")
+        leftHeader.font = NSFont.systemFont(ofSize: 16, weight: .bold)
+        leftHeader.textColor = .white
+        leftHeader.frame = NSRect(x: leftX, y: yL, width: colWidth, height: 20)
+        docView.addSubview(leftHeader)
+        yL -= (20 + sectionToHeader)
 
         // ── Claude ──
-        let claudeLabel = NSTextField(labelWithString: "CLAUDE")
-        claudeLabel.font = NSFont.systemFont(ofSize: 10, weight: .bold)
-        claudeLabel.textColor = labelColor
-        claudeLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: 14)
-        claudeLabel.autoresizingMask = mask
-        view.addSubview(claudeLabel)
-        yL -= (14 + sectionToHeader)
+        let claudeToggle = NSButton(checkboxWithTitle: "", target: self, action: #selector(agentEnableToggled(_:)))
+        claudeToggle.state = claudeEnabled ? .on : .off
+        claudeToggle.identifier = NSUserInterfaceItemIdentifier("agentEnable:claude")
+        claudeToggle.frame = NSRect(x: leftX, y: yL, width: 20, height: 18)
+        docView.addSubview(claudeToggle)
+
+        let claudeSectionLabel = NSTextField(labelWithString: "Claude")
+        claudeSectionLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        claudeSectionLabel.textColor = .white
+        claudeSectionLabel.frame = NSRect(x: leftX + 24, y: yL, width: colWidth - 24, height: 16)
+        docView.addSubview(claudeSectionLabel)
+        yL -= (18 + sectionToHeader)
+
+        // Claude settings — container for easy show/hide
+        let claudeSettingsY = yL
+        var claudeControls: [NSView] = []
 
         let effortLabel = NSTextField(labelWithString: "EFFORT LEVEL")
         effortLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
         effortLabel.textColor = labelColor
         effortLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
-        effortLabel.autoresizingMask = mask
-        view.addSubview(effortLabel)
+        docView.addSubview(effortLabel); claudeControls.append(effortLabel)
         yL -= (labelH + labelToControl)
 
         let effortPop = NSPopUpButton(frame: NSRect(x: leftX, y: yL, width: colWidth, height: 28))
@@ -195,16 +184,14 @@ extension TerminalWindowController {
         effortPop.appearance = NSAppearance(named: .darkAqua)
         effortPop.target = self
         effortPop.action = #selector(effortChanged(_:))
-        effortPop.autoresizingMask = mask
-        view.addSubview(effortPop)
+        docView.addSubview(effortPop); claudeControls.append(effortPop)
         yL -= (controlH + controlToLabel)
 
         let modeLabel = NSTextField(labelWithString: "DEFAULT MODE")
         modeLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
         modeLabel.textColor = labelColor
         modeLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
-        modeLabel.autoresizingMask = mask
-        view.addSubview(modeLabel)
+        docView.addSubview(modeLabel); claudeControls.append(modeLabel)
         yL -= (labelH + labelToControl)
 
         let modePop = NSPopUpButton(frame: NSRect(x: leftX, y: yL, width: colWidth, height: 28))
@@ -213,19 +200,18 @@ extension TerminalWindowController {
         modePop.appearance = NSAppearance(named: .darkAqua)
         modePop.target = self
         modePop.action = #selector(defaultModeChanged(_:))
-        modePop.autoresizingMask = mask
-        view.addSubview(modePop)
-        yL -= (controlH + sectionBreak)
+        docView.addSubview(modePop); claudeControls.append(modePop)
+        yL -= (controlH + controlToLabel)
 
         let portLabel = NSTextField(labelWithString: "BRIDGE PORT")
         portLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
         portLabel.textColor = labelColor
         portLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
-        portLabel.autoresizingMask = mask
-        view.addSubview(portLabel)
+        docView.addSubview(portLabel); claudeControls.append(portLabel)
         yL -= (labelH + labelToControl)
 
         let portField = NSTextField(string: "19280")
+        portField.cell = VerticallyCenteredTextFieldCell(textCell: "19280")
         portField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         portField.textColor = NSColor(white: 1.0, alpha: 0.5)
         portField.backgroundColor = fieldBg
@@ -237,8 +223,7 @@ extension TerminalWindowController {
         portField.layer?.cornerRadius = 8
         portField.layer?.masksToBounds = true
         portField.frame = NSRect(x: leftX, y: yL, width: colWidth, height: 28)
-        portField.autoresizingMask = mask
-        view.addSubview(portField)
+        docView.addSubview(portField); claudeControls.append(portField)
         yL -= (controlH + controlToLabel)
 
         let openBtn = NSButton(frame: NSRect(x: leftX, y: yL, width: colWidth, height: 28))
@@ -252,96 +237,310 @@ extension TerminalWindowController {
         openBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.6)
         openBtn.target = self
         openBtn.action = #selector(openSettingsFile)
-        openBtn.autoresizingMask = mask
-        view.addSubview(openBtn)
-        // hasClaude check removed — always show Claude section since it's labeled
+        docView.addSubview(openBtn); claudeControls.append(openBtn)
+        yL -= (controlH + sectionBreak)
+
+        // Notifications (Claude bridge-specific)
+        let notifLabel = NSTextField(labelWithString: "NOTIFICATIONS")
+        notifLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+        notifLabel.textColor = labelColor
+        notifLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
+        docView.addSubview(notifLabel); claudeControls.append(notifLabel)
+        yL -= (labelH + labelToControl)
+
+        let appDelegate = NSApp.delegate as? AppDelegate
+        let enabled = appDelegate?.currentEnabledNotifications
+
+        let notifTypes: [(key: String, label: String, defaultOn: Bool)] = [
+            ("Stop",          "Task completed (Stop)",    true),
+            ("PostToolUse",   "Tool finished",            false),
+            ("SubagentStop",  "Agent finished",           false),
+            ("TaskCompleted", "Task completed (team)",    false),
+            ("Notification",  "Notifications",            true),
+            ("TeammateIdle",  "Teammate idle",            false),
+            ("SessionEnd",    "Session ended",            false),
+        ]
+
+        for item in notifTypes {
+            let currentState: Bool
+            switch item.key {
+            case "Stop":          currentState = enabled?.Stop ?? item.defaultOn
+            case "PostToolUse":   currentState = enabled?.PostToolUse ?? item.defaultOn
+            case "SubagentStop":  currentState = enabled?.SubagentStop ?? item.defaultOn
+            case "TaskCompleted": currentState = enabled?.TaskCompleted ?? item.defaultOn
+            case "Notification":  currentState = enabled?.Notification ?? item.defaultOn
+            case "TeammateIdle":  currentState = enabled?.TeammateIdle ?? item.defaultOn
+            case "SessionEnd":    currentState = enabled?.SessionEnd ?? item.defaultOn
+            default:              currentState = item.defaultOn
+            }
+
+            let toggle = NSButton(checkboxWithTitle: item.label, target: self,
+                                   action: #selector(notifToggled(_:)))
+            toggle.state = currentState ? .on : .off
+            toggle.identifier = NSUserInterfaceItemIdentifier("notif:" + item.key)
+            toggle.attributedTitle = NSAttributedString(string: item.label, attributes: [
+                .foregroundColor: NSColor.white,
+                .font: NSFont.systemFont(ofSize: 11)
+            ])
+            toggle.frame = NSRect(x: leftX, y: yL, width: colWidth, height: 18)
+            docView.addSubview(toggle); claudeControls.append(toggle)
+            yL -= 22
+        }
+        yL -= controlToLabel
+
+        // Default CLAUDE.md
+        let claudeMdLabel = NSTextField(labelWithString: "DEFAULT CLAUDE.md")
+        claudeMdLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+        claudeMdLabel.textColor = labelColor
+        claudeMdLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
+        docView.addSubview(claudeMdLabel); claudeControls.append(claudeMdLabel)
+        yL -= (labelH + labelToControl)
+
+        let claudeMdScroll = NSScrollView(frame: NSRect(x: leftX, y: yL - textEditorH + controlH, width: colWidth, height: textEditorH))
+        claudeMdScroll.hasVerticalScroller = true
+        claudeMdScroll.hasHorizontalScroller = false
+        claudeMdScroll.autohidesScrollers = true
+        claudeMdScroll.borderType = .noBorder
+        claudeMdScroll.drawsBackground = true
+        claudeMdScroll.backgroundColor = fieldBg
+        claudeMdScroll.wantsLayer = true
+        claudeMdScroll.layer?.cornerRadius = 8
+        claudeMdScroll.layer?.masksToBounds = true
+
+        let claudeTextView = NSTextView(frame: NSRect(x: 0, y: 0, width: colWidth - 16, height: textEditorH))
+        claudeTextView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        claudeTextView.textColor = .white
+        claudeTextView.backgroundColor = .clear
+        claudeTextView.isEditable = true
+        claudeTextView.isSelectable = true
+        claudeTextView.isRichText = false
+        claudeTextView.allowsUndo = true
+        claudeTextView.textContainerInset = NSSize(width: 6, height: 6)
+        claudeTextView.isAutomaticQuoteSubstitutionEnabled = false
+        claudeTextView.isAutomaticDashSubstitutionEnabled = false
+        claudeTextView.isAutomaticTextReplacementEnabled = false
+        claudeTextView.insertionPointColor = .white
+        claudeTextView.isVerticallyResizable = true
+        claudeTextView.isHorizontallyResizable = false
+        claudeTextView.textContainer?.widthTracksTextView = true
+        claudeTextView.identifier = NSUserInterfaceItemIdentifier("claudeMdTemplate")
+        claudeTextView.string = DefaultClaudeMd.load()
+        claudeMdScroll.documentView = claudeTextView
+        docView.addSubview(claudeMdScroll); claudeControls.append(claudeMdScroll)
+        yL -= (textEditorH + sectionBreak)
+
+        if !claudeEnabled {
+            for c in claudeControls { c.isHidden = true }
+            yL = claudeSettingsY - 4  // collapse space
+        }
+
+        // ── Codex ──
+        let codexToggle = NSButton(checkboxWithTitle: "", target: self, action: #selector(agentEnableToggled(_:)))
+        codexToggle.state = codexEnabled ? .on : .off
+        codexToggle.identifier = NSUserInterfaceItemIdentifier("agentEnable:codex")
+        codexToggle.frame = NSRect(x: leftX, y: yL, width: 20, height: 18)
+        docView.addSubview(codexToggle)
+
+        let codexSectionLabel = NSTextField(labelWithString: "Codex")
+        codexSectionLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        codexSectionLabel.textColor = .white
+        codexSectionLabel.frame = NSRect(x: leftX + 24, y: yL, width: colWidth - 24, height: 16)
+        docView.addSubview(codexSectionLabel)
+        yL -= (18 + sectionToHeader)
+
+        let codexSettingsY = yL
+        var codexControls: [NSView] = []
+
+        let approvalLabel = NSTextField(labelWithString: "APPROVAL POLICY")
+        approvalLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+        approvalLabel.textColor = labelColor
+        approvalLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
+        docView.addSubview(approvalLabel); codexControls.append(approvalLabel)
+        yL -= (labelH + labelToControl)
+
+        let currentApproval = CodexConfig.readApprovalPolicy()
+        let approvalPop = NSPopUpButton(frame: NSRect(x: leftX, y: yL, width: colWidth, height: 28))
+        approvalPop.addItems(withTitles: ["untrusted", "on-request", "never"])
+        approvalPop.selectItem(withTitle: currentApproval)
+        approvalPop.font = NSFont.systemFont(ofSize: 12)
+        approvalPop.appearance = NSAppearance(named: .darkAqua)
+        approvalPop.target = self
+        approvalPop.action = #selector(codexApprovalChanged(_:))
+        docView.addSubview(approvalPop); codexControls.append(approvalPop)
+        yL -= (controlH + controlToLabel)
+
+        let sandboxLabel = NSTextField(labelWithString: "SANDBOX MODE")
+        sandboxLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+        sandboxLabel.textColor = labelColor
+        sandboxLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
+        docView.addSubview(sandboxLabel); codexControls.append(sandboxLabel)
+        yL -= (labelH + labelToControl)
+
+        let currentSandbox = CodexConfig.readSandboxMode()
+        let sandboxPop = NSPopUpButton(frame: NSRect(x: leftX, y: yL, width: colWidth, height: 28))
+        sandboxPop.addItems(withTitles: ["workspace-read", "workspace-write", "danger-full-access"])
+        sandboxPop.selectItem(withTitle: currentSandbox)
+        sandboxPop.font = NSFont.systemFont(ofSize: 12)
+        sandboxPop.appearance = NSAppearance(named: .darkAqua)
+        sandboxPop.target = self
+        sandboxPop.action = #selector(codexSandboxChanged(_:))
+        docView.addSubview(sandboxPop); codexControls.append(sandboxPop)
+        yL -= (controlH + controlToLabel)
+
+        let codexDesc = NSTextField(labelWithString: "Applied on next Codex launch")
+        codexDesc.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        codexDesc.textColor = NSColor(white: 1.0, alpha: 0.5)
+        codexDesc.frame = NSRect(x: leftX, y: yL, width: colWidth, height: 14)
+        docView.addSubview(codexDesc); codexControls.append(codexDesc)
+        yL -= (14 + controlToLabel)
+
+        // Default AGENTS.md
+        let agentsMdLabel = NSTextField(labelWithString: "DEFAULT AGENTS.md")
+        agentsMdLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+        agentsMdLabel.textColor = labelColor
+        agentsMdLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
+        docView.addSubview(agentsMdLabel); codexControls.append(agentsMdLabel)
+        yL -= (labelH + labelToControl)
+
+        let agentsMdScroll = NSScrollView(frame: NSRect(x: leftX, y: yL - textEditorH + controlH, width: colWidth, height: textEditorH))
+        agentsMdScroll.hasVerticalScroller = true
+        agentsMdScroll.hasHorizontalScroller = false
+        agentsMdScroll.autohidesScrollers = true
+        agentsMdScroll.borderType = .noBorder
+        agentsMdScroll.drawsBackground = true
+        agentsMdScroll.backgroundColor = fieldBg
+        agentsMdScroll.wantsLayer = true
+        agentsMdScroll.layer?.cornerRadius = 8
+        agentsMdScroll.layer?.masksToBounds = true
+
+        let agentsTextView = NSTextView(frame: NSRect(x: 0, y: 0, width: colWidth - 16, height: textEditorH))
+        agentsTextView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        agentsTextView.textColor = .white
+        agentsTextView.backgroundColor = .clear
+        agentsTextView.isEditable = true
+        agentsTextView.isSelectable = true
+        agentsTextView.isRichText = false
+        agentsTextView.allowsUndo = true
+        agentsTextView.textContainerInset = NSSize(width: 6, height: 6)
+        agentsTextView.isAutomaticQuoteSubstitutionEnabled = false
+        agentsTextView.isAutomaticDashSubstitutionEnabled = false
+        agentsTextView.isAutomaticTextReplacementEnabled = false
+        agentsTextView.insertionPointColor = .white
+        agentsTextView.isVerticallyResizable = true
+        agentsTextView.isHorizontallyResizable = false
+        agentsTextView.textContainer?.widthTracksTextView = true
+        agentsTextView.identifier = NSUserInterfaceItemIdentifier("agentsMdTemplate")
+        agentsTextView.string = DefaultAgentsMd.load()
+        agentsMdScroll.documentView = agentsTextView
+        docView.addSubview(agentsMdScroll); codexControls.append(agentsMdScroll)
+        yL -= (textEditorH + sectionBreak)
+
+        if !codexEnabled {
+            for c in codexControls { c.isHidden = true }
+            yL = codexSettingsY - 4
+        }
 
         // ════════════════════════════════════════
-        // RIGHT COLUMN — MCP Servers
+        // RIGHT COLUMN — General
         // ════════════════════════════════════════
-        var yR = bounds.height - 120
+        var yR = docHeight - 20
 
-        let mcpTitle = NSTextField(labelWithString: "MCP SERVERS")
+        let rightHeader = NSTextField(labelWithString: "GENERAL")
+        rightHeader.font = NSFont.systemFont(ofSize: 16, weight: .bold)
+        rightHeader.textColor = .white
+        rightHeader.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 20)
+        docView.addSubview(rightHeader)
+        yR -= (20 + sectionToHeader)
+
+        // ── Projects Directory ──
+        let projLabel = NSTextField(labelWithString: "DEFAULT PROJECTS DIRECTORY")
+        projLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+        projLabel.textColor = labelColor
+        projLabel.frame = NSRect(x: rightX, y: yR, width: colWidth, height: labelH)
+        docView.addSubview(projLabel)
+        yR -= (labelH + labelToControl)
+
+        let projDir = UserDefaults.standard.string(forKey: "projectsDirectory") ?? ""
+        let projDisplay = projDir.isEmpty ? "~/Projects" : (projDir as NSString).abbreviatingWithTildeInPath
+        let projField = NSTextField(string: projDisplay)
+        projField.cell = VerticallyCenteredTextFieldCell(textCell: projDisplay)
+        projField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        projField.textColor = .white
+        projField.backgroundColor = fieldBg
+        projField.isBordered = false
+        projField.isBezeled = false
+        projField.drawsBackground = true
+        projField.isEditable = false
+        projField.wantsLayer = true
+        projField.layer?.cornerRadius = 8
+        projField.layer?.masksToBounds = true
+        projField.frame = NSRect(x: rightX, y: yR, width: colWidth - 70, height: 28)
+        projField.identifier = NSUserInterfaceItemIdentifier("projectsDirField")
+        docView.addSubview(projField)
+
+        let browseBtn = NSButton(frame: NSRect(x: rightX + colWidth - 64, y: yR, width: 64, height: 28))
+        browseBtn.title = "Browse"
+        browseBtn.bezelStyle = .rounded
+        browseBtn.isBordered = false
+        browseBtn.wantsLayer = true
+        browseBtn.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.1).cgColor
+        browseBtn.layer?.cornerRadius = 8
+        browseBtn.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        browseBtn.contentTintColor = .white
+        browseBtn.target = self
+        browseBtn.action = #selector(browseProjectsDir(_:))
+        docView.addSubview(browseBtn)
+        yR -= (controlH + sectionBreak)
+
+        // ── MCP Servers ──
+        let mcpTitle = NSTextField(labelWithString: "DEFAULT MCP SERVERS")
         mcpTitle.font = NSFont.systemFont(ofSize: 10, weight: .bold)
         mcpTitle.textColor = labelColor
         mcpTitle.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 14)
-        mcpTitle.autoresizingMask = mask
-        view.addSubview(mcpTitle)
-        yR -= (14 + sectionToHeader)
+        docView.addSubview(mcpTitle)
+        yR -= (14 + 6)
+
+        let mcpDesc = NSTextField(labelWithString: "Synced to Claude (.mcp.json) and Codex (config.toml)")
+        mcpDesc.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        mcpDesc.textColor = NSColor(white: 1.0, alpha: 0.5)
+        mcpDesc.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 14)
+        docView.addSubview(mcpDesc)
+        yR -= (14 + controlToLabel)
 
         let mcpManager = MCPConfigManager.shared
-        let projectDir = selectedProject?.directory
-        let projectName = projectDir.map { ($0 as NSString).lastPathComponent } ?? "none"
         let sortedServers = mcpManager.catalog.servers.sorted(by: { $0.key < $1.key })
 
-        // Column sub-headers
-        let globalHdr = NSTextField(labelWithString: "Global")
-        globalHdr.font = NSFont.systemFont(ofSize: 9, weight: .medium)
-        globalHdr.textColor = NSColor(white: 1.0, alpha: 0.4)
-        globalHdr.frame = NSRect(x: rightX, y: yR, width: 42, height: 12)
-        globalHdr.autoresizingMask = mask
-        view.addSubview(globalHdr)
-
-        let serverHdr = NSTextField(labelWithString: "Server")
-        serverHdr.font = NSFont.systemFont(ofSize: 9, weight: .medium)
-        serverHdr.textColor = NSColor(white: 1.0, alpha: 0.4)
-        serverHdr.frame = NSRect(x: rightX + 46, y: yR, width: 100, height: 12)
-        serverHdr.autoresizingMask = mask
-        view.addSubview(serverHdr)
-
-        let projHdr = NSTextField(labelWithString: projectName)
-        projHdr.font = NSFont.systemFont(ofSize: 9, weight: .medium)
-        projHdr.textColor = NSColor(white: 1.0, alpha: 0.4)
-        projHdr.frame = NSRect(x: rightX + colWidth - 80, y: yR, width: 60, height: 12)
-        projHdr.autoresizingMask = mask
-        view.addSubview(projHdr)
-        yR -= 20
-
+        // Server list — each row is 26px, laid out top-to-bottom
         if sortedServers.isEmpty {
-            yR -= 16
+            yR -= 4
             let emptyLabel = NSTextField(labelWithString: "No MCP servers configured")
             emptyLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
             emptyLabel.textColor = NSColor(white: 1.0, alpha: 0.35)
             emptyLabel.alignment = .center
-            emptyLabel.frame = NSRect(x: rightX + 4, y: yR, width: colWidth - 8, height: 16)
-            emptyLabel.autoresizingMask = mask
-            view.addSubview(emptyLabel)
-            yR -= (16 + sectionBreak)
+            emptyLabel.frame = NSRect(x: rightX + 4, y: yR - 16, width: colWidth - 8, height: 16)
+            docView.addSubview(emptyLabel)
+            yR -= 24
         } else {
-            for (name, server) in sortedServers {
-                // Global default toggle
-                let globalToggle = NSButton(checkboxWithTitle: "", target: self,
-                                            action: #selector(mcpGlobalToggled(_:)))
-                globalToggle.state = server.enabledByDefault ? .on : .off
-                globalToggle.identifier = NSUserInterfaceItemIdentifier("mcpGlobal:" + name)
-                globalToggle.frame = NSRect(x: rightX + 4, y: yR, width: 20, height: 18)
-                globalToggle.autoresizingMask = mask
-                view.addSubview(globalToggle)
+            for (i, (name, server)) in sortedServers.enumerated() {
+                yR -= 26
+                let rowY = yR
 
-                // Server name
+                let toggle = NSButton(checkboxWithTitle: "", target: self,
+                                      action: #selector(mcpGlobalToggled(_:)))
+                toggle.state = server.enabledByDefault ? .on : .off
+                toggle.identifier = NSUserInterfaceItemIdentifier("mcpGlobal:" + name)
+                toggle.frame = NSRect(x: rightX + 4, y: rowY, width: 20, height: 18)
+                docView.addSubview(toggle)
+
                 let nameLabel = NSTextField(labelWithString: name)
                 nameLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
                 nameLabel.textColor = .white
-                nameLabel.frame = NSRect(x: rightX + 46, y: yR, width: colWidth - 130, height: 16)
+                nameLabel.frame = NSRect(x: rightX + 30, y: rowY, width: colWidth - 56, height: 16)
                 nameLabel.lineBreakMode = .byTruncatingTail
-                nameLabel.autoresizingMask = mask
-                view.addSubview(nameLabel)
+                docView.addSubview(nameLabel)
 
-                // Per-project toggle
-                if projectDir != nil {
-                    let isActive = mcpManager.isActive(project: projectDir!, server: name)
-                    let projToggle = NSButton(checkboxWithTitle: "", target: self,
-                                              action: #selector(mcpToggled(_:)))
-                    projToggle.state = isActive ? .on : .off
-                    projToggle.identifier = NSUserInterfaceItemIdentifier("mcp:" + name)
-                    projToggle.frame = NSRect(x: rightX + colWidth - 72, y: yR, width: 20, height: 18)
-                    projToggle.autoresizingMask = mask
-                    view.addSubview(projToggle)
-                }
-
-                // Remove button
                 let removeBtn = NSButton(frame: NSRect(
-                    x: rightX + colWidth - 18, y: yR + 1, width: 16, height: 16))
+                    x: rightX + colWidth - 18, y: rowY + 1, width: 16, height: 16))
                 removeBtn.title = "×"
                 removeBtn.bezelStyle = .inline
                 removeBtn.isBordered = false
@@ -350,19 +549,13 @@ extension TerminalWindowController {
                 removeBtn.identifier = NSUserInterfaceItemIdentifier("mcpRemove:" + name)
                 removeBtn.target = self
                 removeBtn.action = #selector(removeMCPServer(_:))
-                removeBtn.autoresizingMask = mask
-                view.addSubview(removeBtn)
-
-                yR -= 26
+                docView.addSubview(removeBtn)
             }
-            yR -= sectionBreak
         }
+        yR -= (controlH + 14)
 
-        // Add / Edit buttons
-        yR -= controlH
-        let mcpBtnW: CGFloat = (colWidth - 8) / 2
-        let addBtn = NSButton(frame: NSRect(x: rightX, y: yR, width: mcpBtnW, height: 28))
-        addBtn.title = "+ Add MCP"
+        let addBtn = NSButton(frame: NSRect(x: rightX, y: yR, width: colWidth, height: controlH))
+        addBtn.title = "+ Add MCP Server"
         addBtn.bezelStyle = .rounded
         addBtn.isBordered = false
         addBtn.wantsLayer = true
@@ -372,23 +565,24 @@ extension TerminalWindowController {
         addBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.6)
         addBtn.target = self
         addBtn.action = #selector(addMCPServer)
-        addBtn.autoresizingMask = mask
-        view.addSubview(addBtn)
+        docView.addSubview(addBtn)
+        yR -= (controlH + sectionBreak)
 
-        let editCfgBtn = NSButton(frame: NSRect(x: rightX + mcpBtnW + 8, y: yR,
-                                                 width: mcpBtnW, height: 28))
-        editCfgBtn.title = "Edit mcp.json"
-        editCfgBtn.bezelStyle = .rounded
-        editCfgBtn.isBordered = false
-        editCfgBtn.wantsLayer = true
-        editCfgBtn.layer?.backgroundColor = fieldBg.cgColor
-        editCfgBtn.layer?.cornerRadius = 8
-        editCfgBtn.font = NSFont.systemFont(ofSize: 10, weight: .medium)
-        editCfgBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.6)
-        editCfgBtn.target = self
-        editCfgBtn.action = #selector(editMCPConfig)
-        editCfgBtn.autoresizingMask = mask
-        view.addSubview(editCfgBtn)
+        // ── Finalize scroll view ──
+        let lowestY = min(yL, yR)
+        let actualDocH = docHeight - lowestY + 20
+        docView.frame = NSRect(x: 0, y: 0, width: bounds.width, height: actualDocH)
+
+        let shift = lowestY - 20
+        for sub in docView.subviews {
+            sub.frame.origin.y -= shift
+        }
+
+        settingsScroll.documentView = docView
+        view.addSubview(settingsScroll)
+
+        // Scroll to top
+        settingsScroll.contentView.scroll(to: NSPoint(x: 0, y: actualDocH - settingsScroll.frame.height))
 
         // ── Crystal icon — top right, flips back ──
         let iconSize: CGFloat = 28
@@ -427,9 +621,44 @@ extension TerminalWindowController {
         onSettingsChanged?(["defaultMode": mode])
     }
 
+    @objc func notifToggled(_ sender: NSButton) {
+        guard let raw = sender.identifier?.rawValue,
+              raw.hasPrefix("notif:") else { return }
+        let key = String(raw.dropFirst(6))
+        let isOn = sender.state == .on
+
+        // Build partial update — only send the changed key
+        let update: [String: Any] = ["enabledNotifications": [key: isOn]]
+        onSettingsChanged?(update)
+    }
+
     @objc func openSettingsFile() {
         let path = ("~/.claude/settings.json" as NSString).expandingTildeInPath
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
+    }
+
+    @objc func agentEnableToggled(_ sender: NSButton) {
+        guard let raw = sender.identifier?.rawValue,
+              raw.hasPrefix("agentEnable:") else { return }
+        let agent = String(raw.dropFirst(12))
+        let isOn = sender.state == .on
+        UserDefaults.standard.set(isOn, forKey: "agentEnabled:\(agent)")
+
+        // Rebuild settings to show/hide agent controls
+        flipToTerminal()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
+            self?.flipToSettings()
+        }
+    }
+
+    @objc func codexApprovalChanged(_ sender: NSPopUpButton) {
+        guard let policy = sender.selectedItem?.title else { return }
+        CodexConfig.writeApprovalPolicy(policy)
+    }
+
+    @objc func codexSandboxChanged(_ sender: NSPopUpButton) {
+        guard let mode = sender.selectedItem?.title else { return }
+        CodexConfig.writeSandboxMode(mode)
     }
 
     @objc func mcpGlobalToggled(_ sender: NSButton) {
@@ -441,31 +670,11 @@ extension TerminalWindowController {
         server.enabledByDefault = sender.state == .on
         mgr.updateServer(name: name, server: server)
 
-        // Re-sync current project and rebuild to update project column
-        if let dir = selectedProject?.directory {
-            mgr.syncToProject(dir)
-        }
+        // Rebuild settings to reflect change
         flipToTerminal()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
             self?.flipToSettings()
         }
-    }
-
-    @objc func mcpToggled(_ sender: NSButton) {
-        guard let raw = sender.identifier?.rawValue,
-              raw.hasPrefix("mcp:"),
-              let dir = selectedProject?.directory else { return }
-        let name = String(raw.dropFirst(4))
-        let mgr = MCPConfigManager.shared
-        let isDefault = mgr.catalog.servers[name]?.enabledByDefault ?? false
-        let newState = sender.state == .on
-
-        if newState == isDefault {
-            mgr.clearProjectOverride(project: dir, server: name)
-        } else {
-            mgr.setProjectOverride(project: dir, server: name, enabled: newState)
-        }
-        mgr.syncToProject(dir)
     }
 
     @objc func addMCPServer() {
@@ -537,24 +746,11 @@ extension TerminalWindowController {
 
         MCPConfigManager.shared.removeServer(name: name)
 
-        // Re-sync any active project
-        if let dir = selectedProject?.directory {
-            MCPConfigManager.shared.syncToProject(dir)
-        }
-
         // Rebuild settings
         flipToTerminal()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
             self?.flipToSettings()
         }
-    }
-
-    @objc func editMCPConfig() {
-        guard let dir = selectedProject?.directory else { return }
-        let path = dir + "/.mcp.json"
-        // Ensure file exists by syncing first
-        MCPConfigManager.shared.syncToProject(dir)
-        NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
     @objc func browseProjectsDir(_ sender: NSButton) {
@@ -574,16 +770,210 @@ extension TerminalWindowController {
             UserDefaults.standard.set(path, forKey: "projectsDirectory")
 
             if let settingsView = self?.settingsView {
-                func findField(in view: NSView) -> NSTextField? {
-                    if let tf = view as? NSTextField, tf.identifier?.rawValue == "projectsDirField" { return tf }
-                    for sub in view.subviews {
-                        if let found = findField(in: sub) { return found }
-                    }
-                    return nil
+                if let tf = self?.findView(in: settingsView, id: "projectsDirField") as? NSTextField {
+                    tf.stringValue = (path as NSString).abbreviatingWithTildeInPath
                 }
-                findField(in: settingsView)?.stringValue = (path as NSString).abbreviatingWithTildeInPath
             }
         }
+    }
+
+    func findView(in view: NSView, id: String) -> NSView? {
+        if view.identifier?.rawValue == id { return view }
+        for sub in view.subviews {
+            if let found = findView(in: sub, id: id) { return found }
+        }
+        // Check inside scroll views
+        if let sv = view as? NSScrollView, let doc = sv.documentView {
+            if let found = findView(in: doc, id: id) { return found }
+        }
+        return nil
+    }
+}
+
+// ── Default CLAUDE.md Template ──
+
+/// Manages the default CLAUDE.md content written to new projects.
+/// Stored at ~/.config/crystl/default-claude.md.
+class DefaultClaudeMd {
+    private static let configDir = NSHomeDirectory() + "/.config/crystl"
+    private static let path = NSHomeDirectory() + "/.config/crystl/default-claude.md"
+
+    static func load() -> String {
+        guard let data = FileManager.default.contents(atPath: path),
+              let text = String(data: data, encoding: .utf8) else {
+            return ""
+        }
+        return text
+    }
+
+    static func save(_ content: String) {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: configDir) {
+            try? fm.createDirectory(atPath: configDir, withIntermediateDirectories: true)
+        }
+        try? content.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
+    /// Writes the template to {project}/CLAUDE.md if it doesn't already exist.
+    /// Does nothing if the template is empty or the file already exists.
+    static func syncToProject(_ project: String) {
+        let claudeMdPath = project + "/CLAUDE.md"
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: claudeMdPath) else { return }
+
+        let content = load()
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        try? content.write(toFile: claudeMdPath, atomically: true, encoding: .utf8)
+    }
+}
+
+// ── Default AGENTS.md Template ──
+
+/// Manages the default AGENTS.md content written to new projects (for Codex CLI).
+/// Stored at ~/.config/crystl/default-agents.md.
+class DefaultAgentsMd {
+    private static let configDir = NSHomeDirectory() + "/.config/crystl"
+    private static let path = NSHomeDirectory() + "/.config/crystl/default-agents.md"
+
+    static func load() -> String {
+        guard let data = FileManager.default.contents(atPath: path),
+              let text = String(data: data, encoding: .utf8) else {
+            return ""
+        }
+        return text
+    }
+
+    static func save(_ content: String) {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: configDir) {
+            try? fm.createDirectory(atPath: configDir, withIntermediateDirectories: true)
+        }
+        try? content.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
+    /// Writes the template to {project}/AGENTS.md if it doesn't already exist.
+    /// Does nothing if the template is empty or the file already exists.
+    static func syncToProject(_ project: String) {
+        let agentsMdPath = project + "/AGENTS.md"
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath: agentsMdPath) else { return }
+
+        let content = load()
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        try? content.write(toFile: agentsMdPath, atomically: true, encoding: .utf8)
+    }
+}
+
+// ── Codex Config ──
+
+/// Reads and writes top-level keys in ~/.codex/config.toml.
+/// Uses simple line-based parsing — no TOML library needed for scalar values.
+class CodexConfig {
+    private static let configPath = NSHomeDirectory() + "/.codex/config.toml"
+
+    static func readApprovalPolicy() -> String {
+        return readKey("approval_policy") ?? "on-request"
+    }
+
+    static func readSandboxMode() -> String {
+        return readKey("sandbox_mode") ?? "workspace-write"
+    }
+
+    static func writeApprovalPolicy(_ value: String) {
+        writeKey("approval_policy", value: value)
+    }
+
+    static func writeSandboxMode(_ value: String) {
+        writeKey("sandbox_mode", value: value)
+    }
+
+    /// Read a top-level string value from config.toml.
+    private static func readKey(_ key: String) -> String? {
+        guard let content = try? String(contentsOfFile: configPath, encoding: .utf8) else { return nil }
+        for line in content.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // Stop at first section header — only read top-level keys
+            if trimmed.hasPrefix("[") && !trimmed.hasPrefix("[[") { break }
+            if trimmed.hasPrefix(key) {
+                let parts = trimmed.components(separatedBy: "=")
+                guard parts.count >= 2 else { continue }
+                let val = parts.dropFirst().joined(separator: "=")
+                    .trimmingCharacters(in: .whitespaces)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                return val
+            }
+        }
+        return nil
+    }
+
+    /// Write a top-level string value to config.toml.
+    /// If the key exists, updates it in place. Otherwise inserts it at the top.
+    private static func writeKey(_ key: String, value: String) {
+        let fm = FileManager.default
+        let dir = NSHomeDirectory() + "/.codex"
+        if !fm.fileExists(atPath: dir) {
+            try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        }
+
+        var content = (try? String(contentsOfFile: configPath, encoding: .utf8)) ?? ""
+        var lines = content.components(separatedBy: "\n")
+        let newLine = "\(key) = \"\(value)\""
+
+        // Find and replace existing key (only in top-level, before first [section])
+        var found = false
+        for (i, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[") && !trimmed.hasPrefix("[[") { break }
+            if trimmed.hasPrefix(key) && trimmed.contains("=") {
+                lines[i] = newLine
+                found = true
+                break
+            }
+        }
+
+        if !found {
+            // Insert after last top-level key (before first section or at end)
+            var insertIdx = 0
+            for (i, line) in lines.enumerated() {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("[") && !trimmed.hasPrefix("[[") { break }
+                if !trimmed.isEmpty && !trimmed.hasPrefix("#") {
+                    insertIdx = i + 1
+                }
+            }
+            lines.insert(newLine, at: insertIdx)
+        }
+
+        content = lines.joined(separator: "\n")
+        try? content.write(toFile: configPath, atomically: true, encoding: .utf8)
+    }
+}
+
+// ── Vertically Centered Text Field Cell ──
+
+class VerticallyCenteredTextFieldCell: NSTextFieldCell {
+    override func titleRect(forBounds rect: NSRect) -> NSRect {
+        var r = super.titleRect(forBounds: rect)
+        let stringHeight = attributedStringValue.boundingRect(
+            with: NSSize(width: r.width, height: .greatestFiniteMagnitude),
+            options: .usesLineFragmentOrigin
+        ).height
+        let offset = (r.height - stringHeight) / 2
+        r.origin.y += offset
+        r.size.height = stringHeight
+        return r
+    }
+
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        super.drawInterior(withFrame: titleRect(forBounds: cellFrame), in: controlView)
+    }
+
+    override func select(withFrame rect: NSRect, in controlView: NSView,
+                         editor textObj: NSText, delegate: Any?,
+                         start selStart: Int, length selLength: Int) {
+        super.select(withFrame: titleRect(forBounds: rect), in: controlView,
+                     editor: textObj, delegate: delegate,
+                     start: selStart, length: selLength)
     }
 }
 

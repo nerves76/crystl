@@ -39,6 +39,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var currentSessions: [SessionInfo] = []
     var currentHistory: [HistoryEntry] = []
     var isPaused: Bool = false
+    var currentEnabledNotifications: EnabledNotifications?
 
     var pendingFolders: [String] = []
     var currentOpacity: CGFloat = {
@@ -80,9 +81,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         terminalController.onPauseToggled = { [weak self] paused in
             self?.updateBridgeSettings(["paused": paused])
         }
+        terminalController.onSettingsChanged = { [weak self] update in
+            self?.updateBridgeSettings(update)
+        }
         terminalController.onTabAdded = { [weak self] tab in
             self?.rail?.addTile(tab: tab)
-            MCPConfigManager.shared.syncToProject(tab.directory)
         }
         terminalController.onTabRemoved = { [weak self] tabId in
             self?.rail?.removeTile(tabId: tabId)
@@ -128,8 +131,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.terminalController.window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
-        r.onNewProject = { [weak self] name, iconName, colorHex in
-            self?.createAndOpenProject(name: name, iconName: iconName, colorHex: colorHex)
+        r.onNewProject = { [weak self] name, iconName, colorHex, includeMcp, includeClaudeMd, includeAgentsMd in
+            self?.createAndOpenProject(name: name, iconName: iconName, colorHex: colorHex,
+                                       includeMcp: includeMcp, includeClaudeMd: includeClaudeMd,
+                                       includeAgentsMd: includeAgentsMd)
         }
         r.onChangeIcon = { [weak self] tabId in
             self?.showIconPicker(for: tabId)
@@ -227,7 +232,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Creates a new project folder and opens it in a new tab.
-    func createAndOpenProject(name: String, iconName: String? = nil, colorHex: String? = nil) {
+    func createAndOpenProject(name: String, iconName: String? = nil, colorHex: String? = nil,
+                              includeMcp: Bool = true, includeClaudeMd: Bool = true,
+                              includeAgentsMd: Bool = true) {
         let projectPath = projectsDirectory + "/" + name
         let fm = FileManager.default
 
@@ -250,7 +257,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             config.save(to: projectPath)
         }
 
-        _ = openFolder(projectPath)
+        // Write defaults based on user's choice in new project panel
+        if includeMcp {
+            MCPConfigManager.shared.syncToProject(projectPath)
+        }
+        if includeClaudeMd {
+            DefaultClaudeMd.syncToProject(projectPath)
+        }
+        if includeAgentsMd {
+            DefaultAgentsMd.syncToProject(projectPath)
+        }
+
+        _ = openFolder(projectPath, skipDefaults: true)
     }
 
     // MARK: - Icon Picker
@@ -298,8 +316,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let tc = terminalController!
         let panelWidth: CGFloat = 140
         let btnHeight: CGFloat = 28
-        let modes: [(String, String)] = [("Manual", "manual"), ("Smart", "smart"), ("Auto", "all")]
-        let panelHeight: CGFloat = CGFloat(modes.count + 1) * btnHeight + 16  // +1 for Pause, padding
+        let modes: [(String, String)] = [("Manual", "manual"), ("Smart", "smart"), ("Auto Approve", "all")]
+        let headerHeight: CGFloat = 28
+        let panelHeight: CGFloat = headerHeight + CGFloat(modes.count + 1) * btnHeight + 16  // +1 for Pause, padding
 
         // Position to the right of the rail icon
         let iconScreenFrame = view.window!.convertToScreen(view.convert(view.bounds, to: nil))
@@ -312,7 +331,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         panel.contentView = glass
 
-        var btnY = panelHeight - btnHeight - 8
+        // Header
+        let header = NSTextField(labelWithString: "APPROVAL MODE")
+        header.font = NSFont.systemFont(ofSize: 9, weight: .bold)
+        header.textColor = NSColor(white: 1.0, alpha: 0.5)
+        header.alignment = .center
+        header.frame = NSRect(x: 0, y: panelHeight - headerHeight, width: panelWidth, height: 14)
+        glass.addSubview(header)
+
+        var btnY = panelHeight - headerHeight - btnHeight
         for (label, mode) in modes {
             let isActive = mode == tc.currentModeValue
             let btn = NSButton(frame: NSRect(x: 8, y: btnY, width: panelWidth - 16, height: btnHeight))
@@ -374,10 +401,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         approvalFlyout = nil
     }
 
-    private func openFolder(_ path: String) -> Bool {
+    private func openFolder(_ path: String, skipDefaults: Bool = false) -> Bool {
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else {
             return false
+        }
+        if !skipDefaults {
+            // Write defaults only if project doesn't already have them
+            MCPConfigManager.shared.syncToProject(path)
+            DefaultClaudeMd.syncToProject(path)
+            DefaultAgentsMd.syncToProject(path)
         }
         terminalController.addProject(cwd: path)
         terminalController.window.makeKeyAndOrderFront(nil)
@@ -424,6 +457,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     if let s = resp.settings {
                         self.currentMode = s.autoApproveMode
                         self.isPaused = s.paused ?? false
+                        self.currentEnabledNotifications = s.enabledNotifications
                         self.terminalController.syncSettings(mode: s.autoApproveMode, paused: s.paused ?? false)
                     }
                 } else {

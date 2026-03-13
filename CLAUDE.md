@@ -116,7 +116,7 @@ Keep source files under **500 lines**. Current violations to address:
 
 - `projectsDirectory` — UserDefaults key for the base directory used by DirectoryPicker and NewProjectPanel. Default: `~/Projects`.
 - Bridge port `19280` — hardcoded in AppDelegate and build.sh.
-- Shell prompt set to minimal `› ` in `CommandHistory.swift` integration script.
+- Shell prompt is not overridden — user's own zsh config applies.
 
 ## Dependencies
 

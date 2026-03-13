@@ -39,80 +39,18 @@ class RailTileView: NSView {
     var onChangeIcon: ((UUID) -> Void)?
     private var shimmerLayer: CAGradientLayer?
     private var isPulsing = false
-    private var isHovered = false
     private var badgeLabel: NSTextField?
-    private var crystalOverlay: NSImageView?
-    private var trackingArea: NSTrackingArea?
-
     init(tile: RailTile, frame: NSRect) {
         self.tile = tile
         super.init(frame: frame)
         wantsLayer = true
         layer?.cornerRadius = 10
         setupBadge()
-        setupCrystalOverlay()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let ta = trackingArea { removeTrackingArea(ta) }
-        trackingArea = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(trackingArea!)
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        isHovered = true
-        showCrystalOverlay()
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        isHovered = false
-        hideCrystalOverlay()
-    }
-
-    private func setupCrystalOverlay() {
-        let imgView = NSImageView(frame: bounds.insetBy(dx: 5, dy: 5))
-        imgView.imageScaling = .scaleProportionallyUpOrDown
-        imgView.alphaValue = 0
-        imgView.wantsLayer = true
-        addSubview(imgView)
-        crystalOverlay = imgView
-    }
-
-    private func showCrystalOverlay() {
-        guard let overlay = crystalOverlay else { return }
-        // Load and tint the crystal image with the tile's color
-        if let path = Bundle.main.path(forResource: "white-diamond-top", ofType: "png"),
-           let img = NSImage(contentsOfFile: path) {
-            img.size = NSSize(width: bounds.width - 10, height: bounds.height - 10)
-            overlay.image = img
-            overlay.contentTintColor = tile.color
-        }
-        overlay.frame = bounds.insetBy(dx: 5, dy: 5)
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.2
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            overlay.animator().alphaValue = 0.85
-        }
-    }
-
-    private func hideCrystalOverlay() {
-        guard let overlay = crystalOverlay else { return }
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.25
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
-            overlay.animator().alphaValue = 0
-        }
-    }
 
     override func rightMouseDown(with event: NSEvent) {
         let menu = NSMenu()
@@ -405,13 +343,23 @@ class NewProjectPanel: NSObject {
     private var nameField: NSTextField?
     private var iconGrid: IconGridView?
     private var colorGrid: ColorGridView?
-    var onSubmit: ((String, String?, String?) -> Void)?  // (name, iconName, colorHex)
+    private var includeMcp: NSButton?
+    private var includeClaudeMd: NSButton?
+    private var includeAgentsMd: NSButton?
+    var onSubmit: ((String, String?, String?, Bool, Bool, Bool) -> Void)?  // (name, iconName, colorHex, includeMcp, includeClaudeMd, includeAgentsMd)
+    var onDismiss: (() -> Void)?
 
     func show(relativeTo railPanel: NSPanel) {
         dismiss()
 
+        let hasMcpDefaults = !MCPConfigManager.shared.catalog.servers.isEmpty
+        let hasClaudeMdTemplate = !DefaultClaudeMd.load().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasAgentsMdTemplate = !DefaultAgentsMd.load().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let checkboxCount = (hasMcpDefaults ? 1 : 0) + (hasClaudeMdTemplate ? 1 : 0) + (hasAgentsMdTemplate ? 1 : 0)
+        let checkboxHeight: CGFloat = checkboxCount > 0 ? CGFloat(checkboxCount) * 22 + 4 : 0
+
         let panelWidth: CGFloat = 320
-        let panelHeight: CGFloat = 420
+        let panelHeight: CGFloat = 420 + checkboxHeight
 
         // Position to the right of the rail
         let railFrame = railPanel.frame
@@ -447,12 +395,23 @@ class NewProjectPanel: NSObject {
 
         var y0 = panelHeight - 28
 
-        // Label
+        // Label + close button
         let label = NSTextField(labelWithString: "New Project")
         label.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         label.textColor = .white
-        label.frame = NSRect(x: 16, y: y0, width: panelWidth - 32, height: 18)
+        label.frame = NSRect(x: 16, y: y0, width: panelWidth - 56, height: 18)
         glass.addSubview(label)
+
+        let closeBtn = NSButton(frame: NSRect(x: panelWidth - 32, y: y0, width: 18, height: 18))
+        closeBtn.title = "×"
+        closeBtn.bezelStyle = .inline
+        closeBtn.isBordered = false
+        closeBtn.font = NSFont.systemFont(ofSize: 16, weight: .light)
+        closeBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.5)
+        closeBtn.target = self
+        closeBtn.action = #selector(cancelClicked)
+        closeBtn.keyEquivalent = "\u{1b}"  // Escape key
+        glass.addSubview(closeBtn)
         y0 -= 30
 
         // Name field
@@ -509,9 +468,12 @@ class NewProjectPanel: NSObject {
         glass.addSubview(searchField)
         y0 -= 26
 
+        // Bottom area height: checkboxes + create button + padding
+        let bottomH: CGFloat = 48 + checkboxHeight
+
         // Icon grid (scrollable)
-        let gridHeight = y0 - 48
-        let scrollView = NSScrollView(frame: NSRect(x: 16, y: 48, width: panelWidth - 32, height: gridHeight))
+        let gridHeight = y0 - bottomH
+        let scrollView = NSScrollView(frame: NSRect(x: 16, y: bottomH, width: panelWidth - 32, height: gridHeight))
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
@@ -532,6 +494,48 @@ class NewProjectPanel: NSObject {
         // Wire search to icon grid
         searchField.target = self
         searchField.action = #selector(searchChanged(_:))
+
+        // ── Default include checkboxes (above create button) ──
+        var cbY: CGFloat = 44
+
+        if hasAgentsMdTemplate {
+            let cb = NSButton(checkboxWithTitle: "Include default AGENTS.md", target: nil, action: nil)
+            cb.state = .on
+            cb.attributedTitle = NSAttributedString(string: "Include default AGENTS.md", attributes: [
+                .foregroundColor: NSColor.white,
+                .font: NSFont.systemFont(ofSize: 10)
+            ])
+            cb.frame = NSRect(x: 16, y: cbY, width: panelWidth - 32, height: 18)
+            glass.addSubview(cb)
+            includeAgentsMd = cb
+            cbY += 22
+        }
+
+        if hasClaudeMdTemplate {
+            let cb = NSButton(checkboxWithTitle: "Include default CLAUDE.md", target: nil, action: nil)
+            cb.state = .on
+            cb.attributedTitle = NSAttributedString(string: "Include default CLAUDE.md", attributes: [
+                .foregroundColor: NSColor.white,
+                .font: NSFont.systemFont(ofSize: 10)
+            ])
+            cb.frame = NSRect(x: 16, y: cbY, width: panelWidth - 32, height: 18)
+            glass.addSubview(cb)
+            includeClaudeMd = cb
+            cbY += 22
+        }
+
+        if hasMcpDefaults {
+            let cb = NSButton(checkboxWithTitle: "Include default MCP servers", target: nil, action: nil)
+            cb.state = .on
+            cb.attributedTitle = NSAttributedString(string: "Include default MCP servers", attributes: [
+                .foregroundColor: NSColor.white,
+                .font: NSFont.systemFont(ofSize: 10)
+            ])
+            cb.frame = NSRect(x: 16, y: cbY, width: panelWidth - 32, height: 18)
+            glass.addSubview(cb)
+            includeMcp = cb
+            cbY += 22
+        }
 
         // Create button
         let createBtn = NSButton(frame: NSRect(x: 16, y: 12, width: panelWidth - 32, height: 28))
@@ -563,6 +567,11 @@ class NewProjectPanel: NSObject {
         submitProject()
     }
 
+    @objc private func cancelClicked() {
+        dismiss()
+        onDismiss?()
+    }
+
     @objc private func searchChanged(_ sender: NSTextField) {
         iconGrid?.filterText = sender.stringValue
     }
@@ -572,7 +581,10 @@ class NewProjectPanel: NSObject {
         guard !name.isEmpty else { return }
         let iconName = iconGrid?.selectedIcon
         let colorHex = colorGrid?.selectedColor.hexString
-        onSubmit?(name, iconName, colorHex)
+        let wantMcp = includeMcp?.state == .on
+        let wantClaudeMd = includeClaudeMd?.state == .on
+        let wantAgentsMd = includeAgentsMd?.state == .on
+        onSubmit?(name, iconName, colorHex, wantMcp, wantClaudeMd, wantAgentsMd)
         dismiss()
     }
 
@@ -592,6 +604,9 @@ class NewProjectPanel: NSObject {
                 }
             }
         }
+        includeMcp = nil
+        includeClaudeMd = nil
+        includeAgentsMd = nil
         panel?.close()
         panel = nil
     }
@@ -660,7 +675,7 @@ class CrystalRailController {
     var onTileClicked: ((UUID) -> Void)?
     var onFolderDropped: ((String) -> Void)?
     var onAddClicked: (() -> Void)?
-    var onNewProject: ((String, String?, String?) -> Void)?  // (name, iconName, colorHex)
+    var onNewProject: ((String, String?, String?, Bool, Bool, Bool) -> Void)?  // (name, iconName, colorHex, includeMcp, includeClaudeMd, includeAgentsMd)
     var onChangeIcon: ((UUID) -> Void)?
     var onSettingsIconClicked: ((NSView) -> Void)?
     private var newProjectPanel = NewProjectPanel()
@@ -751,8 +766,8 @@ class CrystalRailController {
         addBtn.onClick = { [weak self] in
             self?.showNewProjectPanel()
         }
-        newProjectPanel.onSubmit = { [weak self] name, iconName, colorHex in
-            self?.onNewProject?(name, iconName, colorHex)
+        newProjectPanel.onSubmit = { [weak self] name, iconName, colorHex, includeMcp, includeClaudeMd, includeAgentsMd in
+            self?.onNewProject?(name, iconName, colorHex, includeMcp, includeClaudeMd, includeAgentsMd)
         }
         glass.addSubview(addBtn)
         addButton = addBtn

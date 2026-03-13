@@ -115,8 +115,6 @@ class ShellIntegration {
     add-zsh-hook preexec __crystl_preexec
     add-zsh-hook precmd __crystl_precmd
 
-    # Invisible prompt — Crystl shows project info in the status bar
-    PROMPT=' '
     """
 }
 

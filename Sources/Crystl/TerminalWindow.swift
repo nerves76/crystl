@@ -40,10 +40,12 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
     private var opacitySlider: NSSlider?
     private weak var glassView: NSVisualEffectView?
 
-    // Agent detection — Claude Mode UI shown only when Claude is running
+    // Agent detection — mode UI shown when an agent is running
     private var agentMonitor: AgentMonitor?
     private var claudeModeLabel: NSTextField?
     private var claudeModeBg: NSView?
+    private var codexModeLabel: NSTextField?
+    private var codexModeBg: NSView?
     private var frostView: InsetFrostView?
 
     // Convenience accessors
@@ -129,7 +131,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         let iconSize: CGFloat = 28
         let settingsBtn = GlowButton(frame: NSRect(
             x: windowWidth - iconSize - 14,
-            y: windowHeight - iconSize - 10,
+            y: windowHeight - iconSize - 16,
             width: iconSize, height: iconSize
         ))
         settingsBtn.autoresizingMask = [.minXMargin, .minYMargin]
@@ -233,6 +235,34 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         claudeModePopup.autoresizingMask = [.minXMargin]
         claudeModePopup.isHidden = true
         statusBar.addSubview(claudeModePopup)
+
+        // ── Codex Mode section (right) — hidden until Codex is detected ──
+        let codexLabel = NSTextField(labelWithString: "CODEX")
+        codexLabel.font = labelFont
+        codexLabel.textColor = labelColor
+        codexLabel.frame = NSRect(x: windowWidth - 154, y: 48, width: 80, height: 12)
+        codexLabel.autoresizingMask = [.minXMargin]
+        codexLabel.isHidden = true
+        statusBar.addSubview(codexLabel)
+        self.codexModeLabel = codexLabel
+
+        let codexBg = NSView(frame: NSRect(x: windowWidth - 148, y: 20, width: 124, height: 18))
+        codexBg.wantsLayer = true
+        codexBg.layer?.cornerRadius = 6
+        codexBg.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.15).cgColor
+        codexBg.layer?.borderWidth = 0.5
+        codexBg.layer?.borderColor = NSColor(white: 1.0, alpha: 0.25).cgColor
+        codexBg.autoresizingMask = [.minXMargin]
+        codexBg.isHidden = true
+        statusBar.addSubview(codexBg)
+        self.codexModeBg = codexBg
+
+        let codexModeText = NSTextField(labelWithString: "running")
+        codexModeText.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
+        codexModeText.textColor = NSColor(white: 1.0, alpha: 0.7)
+        codexModeText.alignment = .center
+        codexModeText.frame = NSRect(x: 0, y: 1, width: 124, height: 16)
+        codexBg.addSubview(codexModeText)
 
         // Content area — between session bar and status bar
         let contentTop = sessionBarY
@@ -452,13 +482,20 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         projectLabel.stringValue = "\(project.title)  \(cwdDisplay)"
     }
 
-    /// Show or hide Claude-specific UI based on the active session's detected agent.
+    /// Show or hide agent-specific UI based on the active session's detected agent.
     func updateAgentUI() {
-        let isClaude = selectedSession?.detectedAgent == .claude
+        let agent = selectedSession?.detectedAgent ?? .none
+        let isClaude = agent == .claude
+        let isCodex = agent == .codex
+
         claudeModeLabel?.isHidden = !isClaude
         claudeModeBg?.isHidden = !isClaude
         claudeModePopup.isHidden = !isClaude
-        frostView?.setGlowing(isClaude)
+
+        codexModeLabel?.isHidden = !isCodex
+        codexModeBg?.isHidden = !isCodex
+
+        frostView?.setGlowing(agent.isAgent)
     }
 
     private func refreshMonitorSessions() {
@@ -639,7 +676,11 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
             guard let self = self else { return }
             for project in self.projects {
                 if let session = project.sessions.first(where: { $0.terminalView === source }) {
-                    if !session.hasCustomName { session.name = title }
+                    if !session.hasCustomName {
+                        // Strip leading emoji/symbols (e.g. Claude Code's ✳ prefix)
+                        let cleaned = title.drop(while: { !$0.isLetter && !$0.isNumber })
+                        session.name = cleaned.isEmpty ? title : String(cleaned)
+                    }
                     self.updateSessionBar()
                     self.updateWindowTitle()
                     // Title change may indicate agent launch/exit — rescan immediately

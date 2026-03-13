@@ -201,11 +201,49 @@ class MCPConfigManager {
         }
     }
 
+    // MARK: - Read Project Config
+
+    /// Reads the project's existing .mcp.json and returns server names not in the catalog.
+    /// These are "project-local" servers managed outside Crystl.
+    func readProjectServers(_ project: String) -> [String: MCPServer] {
+        let mcpPath = project + "/.mcp.json"
+        guard let data = FileManager.default.contents(atPath: mcpPath),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let servers = json["mcpServers"] as? [String: [String: Any]] else {
+            return [:]
+        }
+
+        var result: [String: MCPServer] = [:]
+        for (name, config) in servers {
+            // Skip servers managed by Crystl's catalog
+            if catalog.servers[name] != nil { continue }
+            if catalog.projects[project]?.servers?[name] != nil { continue }
+
+            result[name] = MCPServer(
+                command: config["command"] as? String,
+                args: config["args"] as? [String],
+                url: config["url"] as? String,
+                env: config["env"] as? [String: String],
+                enabledByDefault: true
+            )
+        }
+        return result
+    }
+
     // MARK: - Sync to Claude Code
+
+    /// Writes default MCP config to {project}/.mcp.json for Claude Code.
+    /// Only writes if .mcp.json doesn't already exist (preserves existing configs).
+    /// Use `forceSyncToProject` to overwrite.
+    func syncToProject(_ project: String) {
+        let mcpPath = project + "/.mcp.json"
+        if FileManager.default.fileExists(atPath: mcpPath) { return }
+        forceSyncToProject(project)
+    }
 
     /// Writes the resolved MCP config to {project}/.mcp.json for Claude Code.
     /// Preserves any existing entries not managed by Crystl's catalog.
-    func syncToProject(_ project: String) {
+    func forceSyncToProject(_ project: String) {
         let resolved = resolve(for: project)
         let mcpPath = project + "/.mcp.json"
         let fm = FileManager.default
