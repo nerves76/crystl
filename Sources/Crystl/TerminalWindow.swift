@@ -1,337 +1,34 @@
-// TerminalWindow.swift — Glass-style terminal window with tabs and controls
+// TerminalWindow.swift — Main terminal window controller
 //
-// Contains the main terminal UI:
-//   - InsetFrostView: Decorative inner glow along window edges
-//   - TerminalTab: Wraps a SwiftTerm LocalProcessTerminalView with metadata
-//   - TabBarView: Custom-drawn tab bar with rename, close, add, settings gear
-//   - TerminalWindowController: Manages the window, glass effect, tabs, and status bar
+// Manages the Crystl window: glass background, tab bar, session bar,
+// terminal views, status bar, and settings flip.
 //
-// Design: Apple Glass aesthetic using NSVisualEffectView (.hudWindow material),
-// transparent terminal backgrounds, rounded corners, and subtle white borders.
-// SwiftTerm's background is forced transparent via KVO on layer.backgroundColor.
+// Primary tabs = project directories. Sessions = terminals within a project.
+// The session bar appears when a project has 2+ sessions.
 
 import Cocoa
 import SwiftTerm
 
-// ── Inset Frost View ──
-
-/// Draws a subtle white inner shadow around the window edges using even-odd
-/// clipping. The view is non-interactive (hitTest returns nil) and floats
-/// above all content as a decorative overlay.
-class InsetFrostView: NSView {
-    var cornerRadius: CGFloat = 12
-
-    override var isFlipped: Bool { false }
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
-        let inset = bounds.insetBy(dx: 0.5, dy: 0.5)
-        let path = CGPath(roundedRect: inset, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
-
-        ctx.saveGState()
-        ctx.addPath(path)
-        ctx.addRect(bounds.insetBy(dx: -20, dy: -20))
-        ctx.clip(using: .evenOdd)
-
-        ctx.setShadow(offset: .zero, blur: 16, color: NSColor(white: 1.0, alpha: 0.6).cgColor)
-        ctx.setFillColor(NSColor(white: 1.0, alpha: 0.7).cgColor)
-        ctx.addPath(path)
-        ctx.fillPath()
-        ctx.restoreGState()
-    }
-}
-
-// ── Terminal Tab ──
-
-/// Wraps a SwiftTerm terminal view with tab metadata (title, cwd, color).
-/// Title auto-updates from the working directory unless manually renamed.
-class TerminalTab {
-    let id = UUID()
-    let terminalView: LocalProcessTerminalView
-    var title: String = "shell"
-    var hasCustomTitle: Bool = false
-    var cwd: String
-    let color: NSColor
-    var historyLogger: CommandHistoryLogger?
-
-    init(color: NSColor, shell: String = "/bin/zsh", cwd: String = NSHomeDirectory(), frame: NSRect = NSRect(x: 0, y: 0, width: 900, height: 536)) {
-        self.color = color
-        self.cwd = cwd
-        self.title = (cwd as NSString).lastPathComponent
-        self.terminalView = LocalProcessTerminalView(frame: frame)
-        self.terminalView.autoresizingMask = [.width, .height]
-    }
-
-    func start() {
-        let shell = "/bin/zsh"
-        let shellIdiom = "-" + (shell as NSString).lastPathComponent
-        let env = ShellIntegration.shared.environment()
-        terminalView.startProcess(executable: shell, environment: env, execName: shellIdiom, currentDirectory: cwd)
-
-        // Register OSC handler for command history after terminal starts
-        let logger = CommandHistoryLogger(terminalView: terminalView)
-        logger.registerHandler()
-        historyLogger = logger
-    }
-}
-
-// ── Glow Button ──
-
-/// NSButton subclass that glows on hover via layer shadow animation.
-class GlowButton: NSButton {
-    private var trackingArea: NSTrackingArea?
-    private let restAlpha: CGFloat = 0.75
-    private let hoverAlpha: CGFloat = 1.0
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let ta = trackingArea { removeTrackingArea(ta) }
-        trackingArea = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeAlways],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(trackingArea!)
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.15
-            animator().alphaValue = hoverAlpha
-        }
-        wantsLayer = true
-        layer?.shadowColor = NSColor.white.cgColor
-        layer?.shadowOffset = .zero
-        layer?.shadowRadius = 8
-        let anim = CABasicAnimation(keyPath: "shadowOpacity")
-        anim.fromValue = 0
-        anim.toValue = 0.6
-        anim.duration = 0.15
-        layer?.shadowOpacity = 0.6
-        layer?.add(anim, forKey: "glowIn")
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.25
-            animator().alphaValue = restAlpha
-        }
-        let anim = CABasicAnimation(keyPath: "shadowOpacity")
-        anim.fromValue = 0.6
-        anim.toValue = 0
-        anim.duration = 0.25
-        layer?.shadowOpacity = 0
-        layer?.add(anim, forKey: "glowOut")
-    }
-}
-
-// ── Tab Bar View ──
-
-/// Custom-drawn tab bar with: tab selection, close buttons, "+" to add,
-/// double-click to rename (inline NSTextField), and a settings gear icon.
-/// Tabs auto-size to fill available width (max 160px each).
-class TabBarView: NSView, NSTextFieldDelegate {
-    var tabs: [TerminalTab] = []
-    var selectedIndex: Int = 0
-    var onSelectTab: ((Int) -> Void)?
-    var onAddTab: (() -> Void)?
-    var onCloseTab: ((Int) -> Void)?
-    var onRenameTab: ((Int, String) -> Void)?
-    private let leftInset: CGFloat = 20
-    private let tabSpacing: CGFloat = 2
-    private var editField: NSTextField?
-    private var editingIndex: Int = -1
-
-    private func computeTabWidth() -> CGFloat {
-        let available = bounds.width - leftInset - 20
-        return min(160, available / max(CGFloat(tabs.count), 1))
-    }
-
-    private func tabOriginX(_ index: Int) -> CGFloat {
-        return leftInset + CGFloat(index) * (computeTabWidth() + tabSpacing)
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        // Separator line at bottom
-        NSColor(white: 0.0, alpha: 0.08).setFill()
-        NSBezierPath.fill(NSRect(x: 0, y: 0, width: bounds.width, height: 0.5))
-
-        let tabW = computeTabWidth()
-        let h: CGFloat = 26
-        let y: CGFloat = (bounds.height - h) / 2
-
-        for (i, tab) in tabs.enumerated() {
-            let x = tabOriginX(i)
-            let rect = NSRect(x: x, y: y, width: tabW, height: h)
-            let isSelected = (i == selectedIndex)
-
-            if isSelected {
-                // Subtle glass highlight for selected tab
-                NSColor(white: 1.0, alpha: 0.12).setFill()
-                NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
-            }
-
-            // Title (skip if editing this tab)
-            if i != editingIndex {
-                let title = tab.title as NSString
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: isSelected ? .medium : .regular),
-                    .foregroundColor: NSColor.white
-                ]
-                let sz = title.size(withAttributes: attrs)
-                let textX = x + 12
-                let textW = tabW - (tabs.count > 1 ? 32 : 24)
-                let textRect = NSRect(x: textX, y: rect.midY - sz.height / 2, width: textW, height: sz.height)
-                title.draw(with: textRect, options: [.truncatesLastVisibleLine, .usesLineFragmentOrigin], attributes: attrs)
-            }
-
-            // Close button (only when multiple tabs)
-            if tabs.count > 1 {
-                let sym = "\u{2715}" as NSString  // ✕
-                let symAttrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.systemFont(ofSize: 9, weight: .medium),
-                    .foregroundColor: NSColor.white.withAlphaComponent(isSelected ? 0.7 : 0.4)
-                ]
-                let symSize = sym.size(withAttributes: symAttrs)
-                let symX = x + tabW - 12 - symSize.width
-                let symY = rect.midY - symSize.height / 2
-                sym.draw(at: NSPoint(x: symX, y: symY), withAttributes: symAttrs)
-            }
-        }
-
-        // "+" button
-        let plusX = tabOriginX(tabs.count) + 8
-        let plusAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 18, weight: .ultraLight),
-            .foregroundColor: NSColor.white
-        ]
-        let plusStr = "+" as NSString
-        let plusSize = plusStr.size(withAttributes: plusAttrs)
-        plusStr.draw(at: NSPoint(x: plusX, y: (bounds.height - plusSize.height) / 2), withAttributes: plusAttrs)
-
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        let loc = convert(event.locationInWindow, from: nil)
-        let tabW = computeTabWidth()
-
-
-        // Double-click to rename
-        if event.clickCount == 2 {
-            for i in 0..<tabs.count {
-                let x = tabOriginX(i)
-                if loc.x >= x && loc.x < x + tabW {
-                    beginEditing(index: i)
-                    return
-                }
-            }
-        }
-
-        // "+" button
-        let plusX = tabOriginX(tabs.count) + 8
-        if loc.x >= plusX - 4 && loc.x <= plusX + 28 {
-            onAddTab?()
-            return
-        }
-
-        for i in 0..<tabs.count {
-            let x = tabOriginX(i)
-            if loc.x >= x && loc.x < x + tabW {
-                if tabs.count > 1 && loc.x >= x + tabW - 20 {
-                    onCloseTab?(i)
-                    return
-                }
-                onSelectTab?(i)
-                return
-            }
-        }
-    }
-
-    func beginEditing(index: Int) {
-        endEditing()
-        editingIndex = index
-        let tabW = computeTabWidth()
-        let x = tabOriginX(index)
-        let h: CGFloat = 26
-        let y: CGFloat = (bounds.height - h) / 2
-
-        let field = NSTextField(frame: NSRect(x: x + 8, y: y + 2, width: tabW - 20, height: h - 4))
-        field.stringValue = tabs[index].title
-        field.font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .medium)
-        field.textColor = .white
-        field.backgroundColor = .clear
-        field.isBordered = false
-        field.isBezeled = false
-        field.focusRingType = .none
-        field.drawsBackground = false
-        field.cell?.isScrollable = true
-        field.cell?.wraps = false
-        field.delegate = self
-        field.target = self
-        field.action = #selector(editFieldCommit)
-        addSubview(field)
-        field.selectText(nil)
-        window?.makeFirstResponder(field)
-        editField = field
-    }
-
-    @objc func editFieldCommit() {
-        endEditing()
-    }
-
-    func endEditing() {
-        guard let field = editField, editingIndex >= 0, editingIndex < tabs.count else {
-            editField?.removeFromSuperview()
-            editField = nil
-            editingIndex = -1
-            return
-        }
-        let newTitle = field.stringValue.trimmingCharacters(in: .whitespaces)
-        if !newTitle.isEmpty {
-            onRenameTab?(editingIndex, newTitle)
-        }
-        field.removeFromSuperview()
-        editField = nil
-        editingIndex = -1
-        needsDisplay = true
-    }
-
-    func controlTextDidEndEditing(_ obj: Notification) {
-        endEditing()
-    }
-}
-
 // ── Terminal Window Controller ──
 
-/// Manages the main Crystl window: glass background, tab bar, terminal views,
-/// and the status bar with approval mode buttons and Claude mode dropdown.
-///
-/// Layout (top to bottom):
-///   - macOS titlebar (48px, transparent, with invisible toolbar for traffic light spacing)
-///   - Tab bar (40px, custom drawn)
-///   - Terminal content area (fills remaining space, padded 20px sides / 24px top+bottom)
-///   - Status bar (64px) with APPROVAL buttons, Pause, and CLAUDE MODE dropdown
-///
-/// The terminal background is forced transparent so the glass effect shows through.
-/// SwiftTerm resets layer.backgroundColor during setup, so we use KVO to override it.
 class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminalViewDelegate {
     var window: NSWindow!
     var tabBar: TabBarView!
-    var onProcessFinished: ((String, String) -> Void)?  // (tabTitle, cwd)
-    var onModeChanged: ((String) -> Void)?  // approval mode
-    var onClaudeModeChanged: ((String) -> Void)?  // claude mode
+    var sessionBar: SessionBarView!
+    private var sessionBarHeight: CGFloat = 28
+    var onProcessFinished: ((String, String) -> Void)?
+    var onModeChanged: ((String) -> Void)?
+    var onClaudeModeChanged: ((String) -> Void)?
     var onPauseToggled: ((Bool) -> Void)?
-    var onTabAdded: ((TerminalTab) -> Void)?
+    var onTabAdded: ((ProjectTab) -> Void)?
     var onTabRemoved: ((UUID) -> Void)?
     var onTabSelected: ((UUID) -> Void)?
-    var onTabUpdated: ((UUID, String, String) -> Void)?  // (tabId, title, cwd)
+    var onTabUpdated: ((UUID, String, String) -> Void)?
     var contentArea: NSView!
     var projectLabel: NSTextField!
     var claudeModePopup: NSPopUpButton!
-    var tabs: [TerminalTab] = []
-    var selectedIndex: Int = 0
+    var projects: [ProjectTab] = []
+    var selectedProjectIndex: Int = 0
     private var colorIndex = 0
     private var scrollerObservers: [UUID: [NSKeyValueObservation]] = [:]
     private var backgroundObservers: [UUID: NSKeyValueObservation] = [:]
@@ -340,10 +37,30 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
     private var isPaused: Bool = false
     private var directoryPicker: DirectoryPicker?
     private var settingsButton: NSButton?
+    private var opacitySlider: NSSlider?
+    private weak var glassView: NSVisualEffectView?
+
+    // Agent detection — Claude Mode UI shown only when Claude is running
+    private var agentMonitor: AgentMonitor?
+    private var claudeModeLabel: NSTextField?
+    private var claudeModeBg: NSView?
+    private var frostView: InsetFrostView?
+
+    // Convenience accessors
+    var selectedProject: ProjectTab? {
+        guard selectedProjectIndex >= 0 && selectedProjectIndex < projects.count else { return nil }
+        return projects[selectedProjectIndex]
+    }
+    var selectedSession: TerminalSession? { selectedProject?.selectedSession }
+
+    // Legacy compatibility — flat list of all sessions
+    var tabs: [TerminalSession] { projects.flatMap { $0.sessions } }
+
+    // MARK: - Setup
 
     func setup() {
-        let windowWidth: CGFloat = 900
-        let windowHeight: CGFloat = 600
+        let windowWidth: CGFloat = 1080
+        let windowHeight: CGFloat = 720
         let tabBarHeight: CGFloat = 40
         let titleBarHeight: CGFloat = 48
         let statusBarHeight: CGFloat = 64
@@ -367,100 +84,126 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         window.minSize = NSSize(width: 480, height: 320)
         window.center()
 
-        // Invisible toolbar gives the titlebar more height, pushing traffic lights down
         let toolbar = NSToolbar(identifier: "crystl")
         toolbar.showsBaselineSeparator = false
         window.toolbar = toolbar
         window.toolbarStyle = .unified
 
-        // Container with rounded corners and soft border
         let container = NSView(frame: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight))
         container.autoresizingMask = [.width, .height]
-        container.wantsLayer = true
-        container.layer?.cornerRadius = 16
-        container.layer?.masksToBounds = true
-        container.layer?.borderWidth = 0.5
-        container.layer?.borderColor = NSColor(white: 1.0, alpha: 0.7).cgColor
         window.contentView = container
 
-        // Glass background — fullScreenUI gives the warm Apple frosted look
         let glass = NSVisualEffectView(frame: container.bounds)
         glass.material = .hudWindow
-        glass.alphaValue = 0.85
+        let savedOpacity = UserDefaults.standard.double(forKey: "windowOpacity")
+        glass.alphaValue = savedOpacity > 0.01 ? CGFloat(savedOpacity) : 0.85
         glass.blendingMode = .behindWindow
         glass.state = .active
         glass.autoresizingMask = [.width, .height]
         glass.appearance = NSAppearance(named: .darkAqua)
         container.addSubview(glass)
+        self.glassView = glass
 
         // Tab bar
         let tabBarY = windowHeight - tabBarHeight - titleBarHeight
         tabBar = TabBarView(frame: NSRect(x: 0, y: tabBarY, width: windowWidth, height: tabBarHeight))
         tabBar.autoresizingMask = [.width, .minYMargin]
-        tabBar.onSelectTab = { [weak self] idx in self?.selectTab(idx) }
-        tabBar.onAddTab = { [weak self] in self?.addTab(showPicker: true) }
-        tabBar.onCloseTab = { [weak self] idx in self?.closeTab(idx) }
-        tabBar.onRenameTab = { [weak self] idx, name in self?.renameTab(idx, name: name) }
+        tabBar.onSelectTab = { [weak self] idx in self?.selectProject(idx) }
+        tabBar.onAddTab = { [weak self] in self?.addProject() }
+        tabBar.onCloseTab = { [weak self] idx in self?.closeProject(idx) }
+        tabBar.onRenameTab = { [weak self] idx, name in self?.renameProject(idx, name: name) }
         container.addSubview(tabBar)
 
-        // Crystal icon settings button — titlebar area, top right
+        // Session bar — below tab bar with a small gap
+        let sessionGap: CGFloat = 10
+        let sessionBarY = tabBarY - sessionBarHeight - sessionGap
+        sessionBar = SessionBarView(frame: NSRect(x: 0, y: sessionBarY, width: windowWidth, height: sessionBarHeight))
+        sessionBar.autoresizingMask = [.width, .minYMargin]
+        // Session bar always visible — shows current session(s) and "+" to add more
+        sessionBar.onSelectSession = { [weak self] idx in self?.selectSession(idx) }
+        sessionBar.onAddSession = { [weak self] in self?.addSessionToCurrentProject() }
+        sessionBar.onRenameSession = { [weak self] idx, name in self?.renameSession(idx, name: name) }
+        container.addSubview(sessionBar)
+
+        // Crystal icon settings button
         let iconSize: CGFloat = 28
-        let iconPadRight: CGFloat = 14
-        let iconPadTop: CGFloat = 10
         let settingsBtn = GlowButton(frame: NSRect(
-            x: windowWidth - iconSize - iconPadRight,
-            y: windowHeight - iconSize - iconPadTop,
-            width: iconSize,
-            height: iconSize
+            x: windowWidth - iconSize - 14,
+            y: windowHeight - iconSize - 10,
+            width: iconSize, height: iconSize
         ))
         settingsBtn.autoresizingMask = [.minXMargin, .minYMargin]
         settingsBtn.isBordered = false
         settingsBtn.bezelStyle = .inline
         settingsBtn.target = self
         settingsBtn.action = #selector(settingsButtonClicked)
-        if let path = Bundle.main.path(forResource: "crystl-white", ofType: "png"),
+        if let path = Bundle.main.path(forResource: "crystl-white-28@2x", ofType: "png")
+            ?? Bundle.main.path(forResource: "crystl-white", ofType: "png"),
            let img = NSImage(contentsOfFile: path) {
             img.size = NSSize(width: iconSize, height: iconSize)
             settingsBtn.image = img
             settingsBtn.imageScaling = .scaleProportionallyDown
         }
         settingsBtn.alphaValue = 0.85
-        settingsBtn.toolTip = "Settings"
+        settingsBtn.hoverText = "Settings"
         self.settingsButton = settingsBtn
         container.addSubview(settingsBtn)
 
-        // Status bar at bottom
+        // ── Opacity slider in title bar ──
+        let sliderWidth: CGFloat = 80
+        let slider = NSSlider(frame: NSRect(
+            x: (windowWidth - sliderWidth) / 2,
+            y: windowHeight - 34,
+            width: sliderWidth, height: 16
+        ))
+        slider.cell = GraySliderCell()
+        slider.minValue = 0.3
+        slider.maxValue = 1.0
+        slider.doubleValue = Double(savedOpacity > 0.01 ? savedOpacity : 0.85)
+        slider.controlSize = .mini
+        slider.isContinuous = true
+        slider.target = self
+        slider.action = #selector(opacitySliderChanged(_:))
+        slider.appearance = NSAppearance(named: .darkAqua)
+        slider.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
+        container.addSubview(slider)
+        opacitySlider = slider
+
+        // Status bar
         let statusBar = NSView(frame: NSRect(x: 0, y: 0, width: windowWidth, height: statusBarHeight))
         statusBar.autoresizingMask = [.width, .maxYMargin]
         container.addSubview(statusBar)
 
-        // Separator above status bar
-        let sep = NSView(frame: NSRect(x: 0, y: statusBarHeight - 0.5, width: windowWidth, height: 0.5))
-        sep.wantsLayer = true
-        sep.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.08).cgColor
-        sep.autoresizingMask = [.width]
-        statusBar.addSubview(sep)
-
         let labelFont = NSFont.systemFont(ofSize: 9, weight: .medium)
         let labelColor = NSColor(white: 1.0, alpha: 0.6)
 
-        // ── Project name (left) ──
+        // ── Project path label + clickable button (left) ──
         projectLabel = NSTextField(labelWithString: "")
         projectLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
         projectLabel.textColor = NSColor(white: 1.0, alpha: 0.7)
         projectLabel.alignment = .left
         projectLabel.lineBreakMode = .byTruncatingMiddle
-        projectLabel.frame = NSRect(x: 24, y: 24, width: windowWidth * 0.6, height: 16)
-        projectLabel.autoresizingMask = [.width]
+        projectLabel.frame = NSRect(x: 24, y: 20, width: 188, height: 16)
         statusBar.addSubview(projectLabel)
 
-        // ── Claude Mode section (right) ──
+        // Invisible button on top of label to catch clicks
+        let pathBtn = NSButton(frame: NSRect(x: 16, y: 16, width: 200, height: 28))
+        pathBtn.title = ""
+        pathBtn.isBordered = false
+        pathBtn.isTransparent = true
+        pathBtn.target = self
+        pathBtn.action = #selector(pathButtonClicked)
+        statusBar.addSubview(pathBtn)
+
+        // ── Claude Mode section (right) — hidden until Claude is detected ──
         let claudeLabel = NSTextField(labelWithString: "CLAUDE MODE")
         claudeLabel.font = labelFont
         claudeLabel.textColor = labelColor
         claudeLabel.frame = NSRect(x: windowWidth - 154, y: 48, width: 80, height: 12)
         claudeLabel.autoresizingMask = [.minXMargin]
+        claudeLabel.isHidden = true
         statusBar.addSubview(claudeLabel)
+        self.claudeModeLabel = claudeLabel
 
         let popupBg = NSView(frame: NSRect(x: windowWidth - 148, y: 20, width: 124, height: 18))
         popupBg.wantsLayer = true
@@ -469,7 +212,9 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         popupBg.layer?.borderWidth = 0.5
         popupBg.layer?.borderColor = NSColor(white: 1.0, alpha: 0.25).cgColor
         popupBg.autoresizingMask = [.minXMargin]
+        popupBg.isHidden = true
         statusBar.addSubview(popupBg)
+        self.claudeModeBg = popupBg
 
         claudeModePopup = NSPopUpButton(frame: NSRect(x: windowWidth - 147, y: 18, width: 122, height: 22))
         claudeModePopup.addItems(withTitles: ["plan", "default", "acceptEdits", "bypassPermissions", "auto"])
@@ -486,117 +231,41 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         claudeModePopup.action = #selector(claudeModeChanged(_:))
         (claudeModePopup.cell as? NSPopUpButtonCell)?.arrowPosition = .arrowAtBottom
         claudeModePopup.autoresizingMask = [.minXMargin]
+        claudeModePopup.isHidden = true
         statusBar.addSubview(claudeModePopup)
 
-        // Content area — inset from edges for padding
-        let contentHeight = windowHeight - tabBarHeight - titleBarHeight - statusBarHeight
-        contentArea = NSView(frame: NSRect(x: termPadX, y: statusBarHeight + termPadBottom, width: windowWidth - termPadX * 2, height: contentHeight - termPadBottom - termPadTop))
+        // Content area — between session bar and status bar
+        let contentTop = sessionBarY
+        let contentBottom = statusBarHeight + termPadBottom
+        contentArea = NSView(frame: NSRect(x: termPadX, y: contentBottom, width: windowWidth - termPadX * 2, height: contentTop - contentBottom - termPadTop))
         contentArea.autoresizingMask = [.width, .height]
         container.addSubview(contentArea)
 
+        // Inset frost border — topmost subview, covers entire container
+        let frost = InsetFrostView(frame: container.bounds)
+        frost.cornerRadius = 16
+        frost.autoresizingMask = [.width, .height]
+        container.addSubview(frost, positioned: .above, relativeTo: nil)
+        self.frostView = frost
 
-        addTab(showPicker: true)
+        addProject()
         animateWindowOpen(container: container)
+
+        // Start agent detection
+        let monitor = AgentMonitor()
+        monitor.sessions = tabs
+        monitor.onAgentChanged = { [weak self] sessionId, agent in
+            guard let self = self else { return }
+            // If the changed session is the active one, update UI
+            if self.selectedSession?.id == sessionId {
+                self.updateAgentUI()
+            }
+        }
+        monitor.start()
+        self.agentMonitor = monitor
     }
 
-    /// Liquid crystal open animation: the window materializes from a bright
-    /// central point, expanding smoothly like liquid filling glass. A prismatic
-    /// shimmer flashes across the surface as it forms, then settles into the
-    /// frosted glass resting state.
-    private func animateWindowOpen(container: NSView) {
-        guard let layer = container.layer else {
-            window.makeKeyAndOrderFront(nil)
-            return
-        }
-
-        let duration: CFTimeInterval = 0.9
-        // Smooth deceleration — fast start, gentle settle (no bounce)
-        let fluidTiming = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
-
-        // Start invisible
-        window.alphaValue = 0
-        window.makeKeyAndOrderFront(nil)
-
-        // Anchor to center for scale
-        layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-        layer.position = CGPoint(x: container.bounds.midX, y: container.bounds.midY)
-
-        // ── Scale: liquid expansion from center ──
-        let scale = CABasicAnimation(keyPath: "transform.scale")
-        scale.fromValue = 0.0
-        scale.toValue = 1.0
-        scale.duration = duration
-        scale.timingFunction = fluidTiming
-
-        // ── Corner radius: circle → rounded rect ──
-        let corners = CABasicAnimation(keyPath: "cornerRadius")
-        corners.fromValue = container.bounds.width / 2
-        corners.toValue = 16
-        corners.duration = duration * 0.7
-        corners.timingFunction = fluidTiming
-
-        // ── Opacity: materialise ──
-        let opacity = CABasicAnimation(keyPath: "opacity")
-        opacity.fromValue = 0.0
-        opacity.toValue = 1.0
-        opacity.duration = duration * 0.4
-        opacity.timingFunction = CAMediaTimingFunction(name: .easeIn)
-
-        // ── Border glow: bright flash that fades ──
-        let borderColor = CABasicAnimation(keyPath: "borderColor")
-        borderColor.fromValue = NSColor(white: 1.0, alpha: 1.0).cgColor
-        borderColor.toValue = NSColor(white: 1.0, alpha: 0.7).cgColor
-        borderColor.duration = duration * 1.2
-        borderColor.timingFunction = CAMediaTimingFunction(name: .easeOut)
-
-        let borderWidth = CABasicAnimation(keyPath: "borderWidth")
-        borderWidth.fromValue = 2.0
-        borderWidth.toValue = 0.5
-        borderWidth.duration = duration * 1.2
-        borderWidth.timingFunction = CAMediaTimingFunction(name: .easeOut)
-
-        // ── Gaussian blur: start soft, sharpen as crystal forms ──
-        if let blur = CIFilter(name: "CIGaussianBlur", parameters: ["inputRadius": 0.0]) {
-            layer.filters = [blur]
-            layer.setValue(0, forKeyPath: "filters.gaussianBlur.inputRadius")
-
-            let blurAnim = CABasicAnimation(keyPath: "filters.gaussianBlur.inputRadius")
-            blurAnim.fromValue = 12.0
-            blurAnim.toValue = 0.0
-            blurAnim.duration = duration * 0.8
-            blurAnim.timingFunction = fluidTiming
-            layer.add(blurAnim, forKey: "openBlur")
-        }
-
-        // Set final values
-        layer.transform = CATransform3DIdentity
-        layer.cornerRadius = 16
-        layer.opacity = 1.0
-        layer.borderWidth = 0.5
-        layer.borderColor = NSColor(white: 1.0, alpha: 0.7).cgColor
-
-        // Run main animations
-        CATransaction.begin()
-        CATransaction.setCompletionBlock { [weak self] in
-            self?.window.alphaValue = 1.0
-            layer.filters = nil
-        }
-        layer.add(scale, forKey: "openScale")
-        layer.add(corners, forKey: "openCorners")
-        layer.add(opacity, forKey: "openOpacity")
-        layer.add(borderColor, forKey: "openBorderColor")
-        layer.add(borderWidth, forKey: "openBorderWidth")
-        CATransaction.commit()
-
-        window.alphaValue = 1.0
-
-        // ── Shimmer pass: sweeps across after window has mostly formed ──
-        addShimmerSweep(
-            to: layer, bounds: container.bounds, cornerRadius: 16,
-            delay: duration * 0.25,
-            fadeInDuration: 0.15, sweepDuration: 0.5, fadeOutDuration: 0.3
-        )
-    }
+    // MARK: - Project Management
 
     func nextColor() -> NSColor {
         let color = sessionColors[colorIndex % sessionColors.count]
@@ -604,71 +273,256 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         return color
     }
 
-    func addTab(cwd: String = NSHomeDirectory(), showPicker: Bool = false) {
-        let tab = TerminalTab(color: nextColor(), cwd: cwd, frame: contentArea.bounds)
-        tab.terminalView.processDelegate = self
-        tabs.append(tab)
+    func addProject(cwd: String = NSHomeDirectory()) {
+        let project = ProjectTab(directory: cwd, color: nextColor())
+        let session = project.addSession(frame: contentArea.bounds)
+        session.terminalView.processDelegate = self
+        projects.append(project)
 
-        configureTerminalAppearance(tab.terminalView, tabId: tab.id)
+        configureTerminalAppearance(session.terminalView, sessionId: session.id)
 
-        // Terminal fills the content area (which is already inset)
-        tab.terminalView.frame = contentArea.bounds
-        tab.terminalView.isHidden = true
-        contentArea.addSubview(tab.terminalView)
+        session.terminalView.frame = contentArea.bounds
+        session.terminalView.isHidden = true
+        contentArea.addSubview(session.terminalView)
 
-        selectTab(tabs.count - 1)
+        selectProject(projects.count - 1)
         updateTabBar()
-        onTabAdded?(tab)
+        refreshMonitorSessions()
+        onTabAdded?(project)
 
-        DispatchQueue.main.async {
-            tab.start()
-            self.hideScroller(in: tab.terminalView, tabId: tab.id)
-
-            // Push prompt to bottom after shell has started and terminal knows its size
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                let rows = tab.terminalView.getTerminal().rows
-                if rows > 2 {
-                    tab.terminalView.feed(text: String(repeating: "\n", count: rows - 2))
-                }
-            }
-
-            // Show directory picker for new tabs
-            if showPicker {
-                self.showDirectoryPicker(for: tab)
-            }
+        DispatchQueue.main.async { [weak self] in
+            session.start()
+            self?.hideScroller(in: session.terminalView, sessionId: session.id)
         }
     }
 
-    func showDirectoryPicker(for tab: TerminalTab) {
+    // MARK: - Session Management
+
+    func addSessionToCurrentProject() {
+        guard let project = selectedProject else { return }
+        let session = project.addSession(frame: contentArea.bounds)
+        session.terminalView.processDelegate = self
+
+        configureTerminalAppearance(session.terminalView, sessionId: session.id)
+
+        session.terminalView.frame = contentArea.bounds
+        session.terminalView.isHidden = true
+        contentArea.addSubview(session.terminalView)
+
+        selectSession(project.sessions.count - 1)
+        updateSessionBar()
+        refreshMonitorSessions()
+
+        DispatchQueue.main.async { [weak self] in
+            session.start()
+            self?.hideScroller(in: session.terminalView, sessionId: session.id)
+        }
+    }
+
+    func selectSession(_ sessionIndex: Int) {
+        guard let project = selectedProject,
+              sessionIndex >= 0 && sessionIndex < project.sessions.count else { return }
+
+        if let current = project.selectedSession {
+            current.terminalView.isHidden = true
+        }
+
+        project.selectedSessionIndex = sessionIndex
+        let session = project.sessions[sessionIndex]
+        session.terminalView.isHidden = false
+        session.terminalView.frame = contentArea.bounds
+        window.makeFirstResponder(session.terminalView)
+
+        updateSessionBar()
+        updateWindowTitle()
+        updateAgentUI()
+    }
+
+    func renameSession(_ index: Int, name: String) {
+        guard let project = selectedProject,
+              index >= 0 && index < project.sessions.count else { return }
+        project.sessions[index].name = name
+        project.sessions[index].hasCustomName = true
+        updateSessionBar()
+    }
+
+    func closeSession(_ sessionIndex: Int) {
+        guard let project = selectedProject,
+              project.sessions.count > 1 && sessionIndex < project.sessions.count else { return }
+
+        let session = project.sessions[sessionIndex]
+        backgroundObservers.removeValue(forKey: session.id)
+        scrollerObservers.removeValue(forKey: session.id)
+        session.terminalView.removeFromSuperview()
+        project.sessions.remove(at: sessionIndex)
+
+        if project.selectedSessionIndex >= project.sessions.count {
+            project.selectedSessionIndex = project.sessions.count - 1
+        } else if project.selectedSessionIndex > sessionIndex {
+            project.selectedSessionIndex -= 1
+        }
+
+        selectSession(project.selectedSessionIndex)
+        updateSessionBar()
+        refreshMonitorSessions()
+    }
+
+    // MARK: - Project Selection
+
+    func selectProject(_ index: Int) {
+        guard index >= 0 && index < projects.count else { return }
+
+        if let currentSession = selectedProject?.selectedSession {
+            currentSession.terminalView.isHidden = true
+        }
+
+        selectedProjectIndex = index
+        let project = projects[index]
+
+        if let session = project.selectedSession {
+            session.terminalView.isHidden = false
+            session.terminalView.frame = contentArea.bounds
+            window.makeFirstResponder(session.terminalView)
+        }
+
+        updateTabBar()
+        updateSessionBar()
+        updateWindowTitle()
+        updateAgentUI()
+        onTabSelected?(project.id)
+    }
+
+    func closeProject(_ index: Int) {
+        guard projects.count > 1 && index < projects.count else { return }
+
+        let project = projects[index]
+        let projectId = project.id
+
+        // Clean up all sessions
+        for session in project.sessions {
+            backgroundObservers.removeValue(forKey: session.id)
+            scrollerObservers.removeValue(forKey: session.id)
+            session.terminalView.removeFromSuperview()
+        }
+        projects.remove(at: index)
+        onTabRemoved?(projectId)
+
+        if selectedProjectIndex >= projects.count {
+            selectedProjectIndex = projects.count - 1
+        } else if selectedProjectIndex > index {
+            selectedProjectIndex -= 1
+        }
+
+        selectProject(selectedProjectIndex)
+        updateTabBar()
+        refreshMonitorSessions()
+    }
+
+    func renameProject(_ index: Int, name: String) {
+        guard index >= 0 && index < projects.count else { return }
+        projects[index].title = name
+        projects[index].hasCustomTitle = true
+        updateTabBar()
+        updateWindowTitle()
+    }
+
+    // MARK: - UI Updates
+
+    func updateTabBar() {
+        tabBar.projects = projects
+        tabBar.selectedIndex = selectedProjectIndex
+        tabBar.needsDisplay = true
+    }
+
+    func updateSessionBar() {
+        guard let project = selectedProject else { return }
+
+        sessionBar.sessions = project.sessions
+        sessionBar.selectedIndex = project.selectedSessionIndex
+        sessionBar.projectColor = project.color
+        sessionBar.isHidden = false
+        sessionBar.needsDisplay = true
+    }
+
+    func updateWindowTitle() {
+        guard let project = selectedProject, let session = project.selectedSession else { return }
+        let sessionSuffix = project.sessions.count > 1 ? " / \(session.name)" : ""
+        window.title = "Crystl \u{2014} \(project.title)\(sessionSuffix)"
+        let cwdDisplay = (session.cwd as NSString).abbreviatingWithTildeInPath
+        projectLabel.stringValue = "\(project.title)  \(cwdDisplay)"
+    }
+
+    /// Show or hide Claude-specific UI based on the active session's detected agent.
+    func updateAgentUI() {
+        let isClaude = selectedSession?.detectedAgent == .claude
+        claudeModeLabel?.isHidden = !isClaude
+        claudeModeBg?.isHidden = !isClaude
+        claudeModePopup.isHidden = !isClaude
+        frostView?.setGlowing(isClaude)
+    }
+
+    private func refreshMonitorSessions() {
+        agentMonitor?.sessions = tabs
+    }
+
+    // MARK: - Directory Picker
+
+    func showDirectoryPicker(for session: TerminalSession) {
         let projDir = UserDefaults.standard.string(forKey: "projectsDirectory") ?? ""
         let dir = projDir.isEmpty ? (NSHomeDirectory() + "/Projects") : projDir
 
         let picker = DirectoryPicker()
         picker.onSelect = { [weak self] path in
-            // cd to the selected directory
-            tab.terminalView.send(txt: "cd \(self?.shellEscape(path) ?? path) && clear\n")
-            tab.cwd = path
-            tab.title = (path as NSString).lastPathComponent
+            session.terminalView.send(txt: "cd \(self?.shellEscape(path) ?? path) && clear\n")
+            session.cwd = path
+            if let project = self?.selectedProject {
+                project.directory = path
+                if !project.hasCustomTitle {
+                    project.title = (path as NSString).lastPathComponent
+                }
+            }
             self?.updateTabBar()
             self?.updateWindowTitle()
-            self?.onTabUpdated?(tab.id, tab.title, tab.cwd)
+            if let project = self?.selectedProject {
+                self?.onTabUpdated?(project.id, project.title, project.directory)
+            }
             self?.directoryPicker = nil
-            self?.window.makeFirstResponder(tab.terminalView)
+            self?.window.makeFirstResponder(session.terminalView)
         }
         picker.onDismiss = { [weak self] in
             self?.directoryPicker = nil
-            self?.window.makeFirstResponder(tab.terminalView)
+            self?.window.makeFirstResponder(session.terminalView)
         }
         picker.show(in: contentArea, projectsDir: dir)
         directoryPicker = picker
     }
 
-    /// Escapes a path for safe use in shell commands.
+    @objc func pathButtonClicked() {
+        guard let session = selectedSession else { return }
+
+        if directoryPicker?.isVisible == true {
+            directoryPicker?.dismiss()
+            directoryPicker = nil
+            window.makeFirstResponder(session.terminalView)
+            return
+        }
+
+        showDirectoryPicker(for: session)
+    }
+
     private func shellEscape(_ path: String) -> String {
         return "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    func configureTerminalAppearance(_ tv: LocalProcessTerminalView, tabId: UUID) {
+    // MARK: - Terminal Appearance
+
+    func configureTerminalAppearance(_ tv: LocalProcessTerminalView, sessionId: UUID) {
+        // File drop overlay — pastes shell-escaped paths into the terminal
+        let dropView = TerminalDropView(frame: tv.bounds)
+        dropView.autoresizingMask = [.width, .height]
+        dropView.terminalView = tv
+        tv.addSubview(dropView)
+
         tv.nativeForegroundColor = NSColor.white
         tv.nativeBackgroundColor = NSColor(white: 1.0, alpha: 0.001)
 
@@ -679,320 +533,65 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
 
         tv.caretColor = NSColor(red: 0.55, green: 0.75, blue: 0.95, alpha: 1.0)
         tv.alphaValue = 0.9
-        makeTerminalTransparent(tv, tabId: tabId)
+        makeTerminalTransparent(tv, sessionId: sessionId)
     }
 
-    var onSettingsChanged: (([String: Any]) -> Void)?
-    private var settingsView: NSView?
-    private var isShowingSettings = false
-
-    @objc func settingsButtonClicked() {
-        showSettingsPopover()
-    }
-
-    func showSettingsPopover() {
-        if isShowingSettings {
-            flipToTerminal()
-        } else {
-            flipToSettings()
-        }
-    }
-
-    private func buildSettingsView() -> NSView {
-        guard let container = window.contentView else { return NSView() }
-        let bounds = container.bounds
-
-        let view = NSView(frame: bounds)
-        view.autoresizingMask = [.width, .height]
-        view.wantsLayer = true
-        view.layer?.cornerRadius = 16
-        view.layer?.masksToBounds = true
-
-        // Glass background
-        let glass = NSVisualEffectView(frame: bounds)
-        glass.material = .hudWindow
-        glass.alphaValue = 0.85
-        glass.blendingMode = .behindWindow
-        glass.state = .active
-        glass.autoresizingMask = [.width, .height]
-        glass.appearance = NSAppearance(named: .darkAqua)
-        view.addSubview(glass)
-
-        let centerX = bounds.width / 2
-        let cardWidth: CGFloat = 320
-        let cardLeft = centerX - cardWidth / 2
-        let labelColor = NSColor(white: 1.0, alpha: 0.6)
-        let fieldBg = NSColor(white: 1.0, alpha: 0.12)
-
-        // Title
-        let title = NSTextField(labelWithString: "Settings")
-        title.font = NSFont.systemFont(ofSize: 22, weight: .semibold)
-        title.textColor = .white
-        title.alignment = .center
-        title.frame = NSRect(x: cardLeft, y: bounds.height - 90, width: cardWidth, height: 28)
-        title.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
-        view.addSubview(title)
-
-        var y = bounds.height - 130
-
-        // ── Projects Directory ──
-        let projLabel = NSTextField(labelWithString: "PROJECTS DIRECTORY")
-        projLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
-        projLabel.textColor = labelColor
-        projLabel.frame = NSRect(x: cardLeft, y: y, width: cardWidth, height: 14)
-        projLabel.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
-        view.addSubview(projLabel)
-        y -= 26
-
-        let projDir = UserDefaults.standard.string(forKey: "projectsDirectory") ?? ""
-        let projDisplay = projDir.isEmpty ? "~/Projects" : (projDir as NSString).abbreviatingWithTildeInPath
-        let projField = NSTextField(string: projDisplay)
-        projField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        projField.textColor = .white
-        projField.backgroundColor = fieldBg
-        projField.isBordered = false
-        projField.isBezeled = false
-        projField.drawsBackground = true
-        projField.isEditable = false
-        projField.wantsLayer = true
-        projField.layer?.cornerRadius = 6
-        projField.frame = NSRect(x: cardLeft, y: y, width: cardWidth - 70, height: 24)
-        projField.identifier = NSUserInterfaceItemIdentifier("projectsDirField")
-        projField.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
-        view.addSubview(projField)
-
-        let browseBtn = NSButton(frame: NSRect(x: cardLeft + cardWidth - 64, y: y, width: 64, height: 24))
-        browseBtn.title = "Browse"
-        browseBtn.bezelStyle = .rounded
-        browseBtn.isBordered = false
-        browseBtn.wantsLayer = true
-        browseBtn.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.1).cgColor
-        browseBtn.layer?.cornerRadius = 6
-        browseBtn.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        browseBtn.contentTintColor = .white
-        browseBtn.target = self
-        browseBtn.action = #selector(browseProjectsDir(_:))
-        browseBtn.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
-        view.addSubview(browseBtn)
-        y -= 36
-
-        // ── Effort Level ──
-        let effortLabel = NSTextField(labelWithString: "EFFORT LEVEL")
-        effortLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
-        effortLabel.textColor = labelColor
-        effortLabel.frame = NSRect(x: cardLeft, y: y, width: cardWidth, height: 14)
-        effortLabel.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
-        view.addSubview(effortLabel)
-        y -= 26
-
-        let effortPop = NSPopUpButton(frame: NSRect(x: cardLeft, y: y, width: cardWidth, height: 24))
-        effortPop.addItems(withTitles: ["low", "medium", "high"])
-        effortPop.selectItem(withTitle: "high")
-        effortPop.font = NSFont.systemFont(ofSize: 12)
-        effortPop.appearance = NSAppearance(named: .darkAqua)
-        effortPop.target = self
-        effortPop.action = #selector(effortChanged(_:))
-        effortPop.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
-        view.addSubview(effortPop)
-        y -= 36
-
-        // ── Default Mode ──
-        let modeLabel = NSTextField(labelWithString: "DEFAULT MODE")
-        modeLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
-        modeLabel.textColor = labelColor
-        modeLabel.frame = NSRect(x: cardLeft, y: y, width: cardWidth, height: 14)
-        modeLabel.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
-        view.addSubview(modeLabel)
-        y -= 26
-
-        let modePop = NSPopUpButton(frame: NSRect(x: cardLeft, y: y, width: cardWidth, height: 24))
-        modePop.addItems(withTitles: ["plan", "default", "acceptEdits", "bypassPermissions"])
-        modePop.font = NSFont.systemFont(ofSize: 12)
-        modePop.appearance = NSAppearance(named: .darkAqua)
-        modePop.target = self
-        modePop.action = #selector(defaultModeChanged(_:))
-        modePop.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
-        view.addSubview(modePop)
-        y -= 36
-
-        // ── Bridge Port ──
-        let portLabel = NSTextField(labelWithString: "BRIDGE PORT")
-        portLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
-        portLabel.textColor = labelColor
-        portLabel.frame = NSRect(x: cardLeft, y: y, width: cardWidth, height: 14)
-        portLabel.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
-        view.addSubview(portLabel)
-        y -= 26
-
-        let portField = NSTextField(string: "19280")
-        portField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        portField.textColor = NSColor(white: 1.0, alpha: 0.5)
-        portField.backgroundColor = fieldBg
-        portField.isBordered = false
-        portField.isBezeled = false
-        portField.drawsBackground = true
-        portField.isEditable = false
-        portField.wantsLayer = true
-        portField.layer?.cornerRadius = 6
-        portField.frame = NSRect(x: cardLeft, y: y, width: cardWidth, height: 24)
-        portField.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
-        view.addSubview(portField)
-        y -= 36
-
-        // ── Open settings.json ──
-        let openBtn = NSButton(frame: NSRect(x: cardLeft, y: y, width: cardWidth, height: 30))
-        openBtn.title = "Open Claude settings.json"
-        openBtn.bezelStyle = .rounded
-        openBtn.isBordered = false
-        openBtn.wantsLayer = true
-        openBtn.layer?.backgroundColor = fieldBg.cgColor
-        openBtn.layer?.cornerRadius = 8
-        openBtn.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        openBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.6)
-        openBtn.target = self
-        openBtn.action = #selector(openSettingsFile)
-        openBtn.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
-        view.addSubview(openBtn)
-
-        // Crystal icon — top right, flips back to terminal
-        let iconSize: CGFloat = 28
-        let crystalBtn = GlowButton(frame: NSRect(
-            x: bounds.width - iconSize - 14,
-            y: bounds.height - iconSize - 18,
-            width: iconSize,
-            height: iconSize
-        ))
-        crystalBtn.autoresizingMask = [.minXMargin, .minYMargin]
-        crystalBtn.isBordered = false
-        crystalBtn.bezelStyle = .inline
-        crystalBtn.target = self
-        crystalBtn.action = #selector(flipBackClicked)
-        crystalBtn.keyEquivalent = "\u{1b}" // Escape
-        if let path = Bundle.main.path(forResource: "crystl-white", ofType: "png"),
-           let img = NSImage(contentsOfFile: path) {
-            img.size = NSSize(width: iconSize, height: iconSize)
-            crystalBtn.image = img
-            crystalBtn.imageScaling = .scaleProportionallyDown
-        }
-        crystalBtn.alphaValue = 0.75
-        crystalBtn.toolTip = "Back to terminal"
-        view.addSubview(crystalBtn)
-
-        return view
-    }
-
-    private func flipToSettings() {
-        guard let container = window.contentView else { return }
-        isShowingSettings = true
-
-        let settings = buildSettingsView()
-        settings.frame = container.bounds
-        settingsView = settings
-
-        let terminalViews = container.subviews.map { $0 }
-
-        // Hide the static border/corner during flip
-        container.layer?.borderWidth = 0
-        container.layer?.cornerRadius = 0
-
-        let transition = CATransition()
-        transition.duration = 0.6
-        transition.type = CATransitionType(rawValue: "flip")
-        transition.subtype = .fromRight
-        transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        container.wantsLayer = true
-        container.layer?.add(transition, forKey: "settingsFlip")
-
-        for sub in terminalViews { sub.isHidden = true }
-        container.addSubview(settings)
-
-        // Restore border after animation
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            container.layer?.borderWidth = 0.5
-            container.layer?.borderColor = NSColor(white: 1.0, alpha: 0.7).cgColor
-            container.layer?.cornerRadius = 16
-        }
-    }
-
-    private func flipToTerminal() {
-        guard let container = window.contentView, let settings = settingsView else { return }
-        isShowingSettings = false
-
-        // Hide the static border/corner during flip
-        container.layer?.borderWidth = 0
-        container.layer?.cornerRadius = 0
-
-        let transition = CATransition()
-        transition.duration = 0.6
-        transition.type = CATransitionType(rawValue: "flip")
-        transition.subtype = .fromLeft
-        transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        container.wantsLayer = true
-        container.layer?.add(transition, forKey: "settingsFlip")
-
-        settings.removeFromSuperview()
-        self.settingsView = nil
-        for sub in container.subviews { sub.isHidden = false }
-
-        if selectedIndex < tabs.count {
-            window.makeFirstResponder(tabs[selectedIndex].terminalView)
-        }
-
-        // Restore border after animation
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            container.layer?.borderWidth = 0.5
-            container.layer?.borderColor = NSColor(white: 1.0, alpha: 0.7).cgColor
-            container.layer?.cornerRadius = 16
-        }
-    }
-
-    @objc func flipBackClicked() {
-        flipToTerminal()
-    }
-
-    @objc func effortChanged(_ sender: NSPopUpButton) {
-        guard let level = sender.selectedItem?.title else { return }
-        onSettingsChanged?(["effortLevel": level])
-    }
-
-    @objc func defaultModeChanged(_ sender: NSPopUpButton) {
-        guard let mode = sender.selectedItem?.title else { return }
-        onSettingsChanged?(["defaultMode": mode])
-    }
-
-    @objc func openSettingsFile() {
-        let path = ("~/.claude/settings.json" as NSString).expandingTildeInPath
-        NSWorkspace.shared.open(URL(fileURLWithPath: path))
-    }
-
-    @objc func browseProjectsDir(_ sender: NSButton) {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose"
-        panel.message = "Select your projects directory"
-
-        let currentDir = UserDefaults.standard.string(forKey: "projectsDirectory") ?? (NSHomeDirectory() + "/Projects")
-        panel.directoryURL = URL(fileURLWithPath: currentDir)
-
-        panel.begin { [weak self] response in
-            guard response == .OK, let url = panel.url else { return }
-            let path = url.path
-            UserDefaults.standard.set(path, forKey: "projectsDirectory")
-
-            // Update the field in the settings view
-            if let settingsView = self?.settingsView {
-                func findField(in view: NSView) -> NSTextField? {
-                    if let tf = view as? NSTextField, tf.identifier?.rawValue == "projectsDirField" { return tf }
-                    for sub in view.subviews {
-                        if let found = findField(in: sub) { return found }
-                    }
-                    return nil
+    func hideScroller(in tv: LocalProcessTerminalView, sessionId: UUID) {
+        for sub in tv.subviews {
+            if sub is NSScroller {
+                sub.isHidden = true
+                let obs = sub.observe(\.isHidden, options: [.new]) { scroller, change in
+                    if change.newValue == false { scroller.isHidden = true }
                 }
-                findField(in: settingsView)?.stringValue = (path as NSString).abbreviatingWithTildeInPath
+                scrollerObservers[sessionId, default: []].append(obs)
             }
         }
+    }
+
+    func makeTerminalTransparent(_ tv: LocalProcessTerminalView, sessionId: UUID) {
+        tv.wantsLayer = true
+        tv.layer?.isOpaque = false
+        tv.layer?.backgroundColor = CGColor(gray: 0, alpha: 0)
+
+        for sub in tv.subviews {
+            if let scrollView = sub as? NSScrollView {
+                scrollView.drawsBackground = false
+                scrollView.backgroundColor = .clear
+                scrollView.contentView.drawsBackground = false
+                scrollView.wantsLayer = true
+                scrollView.layer?.backgroundColor = CGColor.clear
+                scrollView.contentView.wantsLayer = true
+                scrollView.contentView.layer?.backgroundColor = CGColor.clear
+            }
+            sub.wantsLayer = true
+            sub.layer?.backgroundColor = CGColor.clear
+        }
+
+        if let layer = tv.layer {
+            let obs = layer.observe(\.backgroundColor, options: [.new]) { layer, _ in
+                let alpha = layer.backgroundColor?.alpha ?? 1.0
+                if alpha > 0.01 { layer.backgroundColor = CGColor(gray: 0, alpha: 0) }
+            }
+            backgroundObservers[sessionId] = obs
+        }
+    }
+
+    // MARK: - Settings
+
+    var onSettingsChanged: (([String: Any]) -> Void)?
+    var onOpacityChanged: ((CGFloat) -> Void)?
+    var settingsView: NSView?
+    var isShowingSettings = false
+
+    @objc func settingsButtonClicked() {
+        if isShowingSettings { flipToTerminal() } else { flipToSettings() }
+    }
+
+    @objc private func opacitySliderChanged(_ sender: NSSlider) {
+        let val = CGFloat(sender.doubleValue)
+        glassView?.alphaValue = val
+        UserDefaults.standard.set(sender.doubleValue, forKey: "windowOpacity")
+        onOpacityChanged?(val)
     }
 
     // Accessors for rail menu
@@ -1031,166 +630,63 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         }
     }
 
-    func renameTab(_ index: Int, name: String) {
-        guard index >= 0 && index < tabs.count else { return }
-        tabs[index].title = name
-        tabs[index].hasCustomTitle = true
-        updateTabBar()
-        updateWindowTitle()
-    }
-
-    /// Hides the terminal scrollbar and watches for SwiftTerm re-showing it.
-    /// SwiftTerm's scroller is private, so we find it by type and use KVO.
-    func hideScroller(in tv: LocalProcessTerminalView, tabId: UUID) {
-        for sub in tv.subviews {
-            if sub is NSScroller {
-                sub.isHidden = true
-                // Observe in case SwiftTerm re-shows it
-                let obs = sub.observe(\.isHidden, options: [.new]) { scroller, change in
-                    if change.newValue == false {
-                        scroller.isHidden = true
-                    }
-                }
-                scrollerObservers[tabId, default: []].append(obs)
-            }
-        }
-    }
-
-    /// Forces the terminal layer transparent and adds a KVO observer to
-    /// prevent SwiftTerm from resetting it during setupOptions().
-    func makeTerminalTransparent(_ tv: LocalProcessTerminalView, tabId: UUID) {
-        tv.wantsLayer = true
-        tv.layer?.isOpaque = false
-        tv.layer?.backgroundColor = CGColor(gray: 0, alpha: 0)
-
-        // Also clear any scroll view backgrounds inside SwiftTerm
-        for sub in tv.subviews {
-            if let scrollView = sub as? NSScrollView {
-                scrollView.drawsBackground = false
-                scrollView.backgroundColor = .clear
-                scrollView.contentView.drawsBackground = false
-                scrollView.wantsLayer = true
-                scrollView.layer?.backgroundColor = CGColor.clear
-                scrollView.contentView.wantsLayer = true
-                scrollView.contentView.layer?.backgroundColor = CGColor.clear
-            }
-            sub.wantsLayer = true
-            sub.layer?.backgroundColor = CGColor.clear
-        }
-
-        if let layer = tv.layer {
-            let obs = layer.observe(\.backgroundColor, options: [.new]) { layer, _ in
-                let alpha = layer.backgroundColor?.alpha ?? 1.0
-                if alpha > 0.01 {
-                    layer.backgroundColor = CGColor(gray: 0, alpha: 0)
-                }
-            }
-            backgroundObservers[tabId] = obs
-        }
-    }
-
-    func selectTab(_ index: Int) {
-        guard index >= 0 && index < tabs.count else { return }
-
-        if selectedIndex < tabs.count {
-            tabs[selectedIndex].terminalView.isHidden = true
-        }
-
-        selectedIndex = index
-
-        let tab = tabs[index]
-        tab.terminalView.isHidden = false
-        tab.terminalView.frame = contentArea.bounds
-        window.makeFirstResponder(tab.terminalView)
-
-        updateTabBar()
-        updateWindowTitle()
-        onTabSelected?(tab.id)
-    }
-
-    func closeTab(_ index: Int) {
-        guard tabs.count > 1 && index < tabs.count else { return }
-
-        let tab = tabs[index]
-        let tabId = tab.id
-
-        // Remove KVO observers for this tab
-        backgroundObservers.removeValue(forKey: tabId)
-        scrollerObservers.removeValue(forKey: tabId)
-
-        tab.terminalView.removeFromSuperview()
-        tabs.remove(at: index)
-        onTabRemoved?(tabId)
-
-        if selectedIndex >= tabs.count {
-            selectedIndex = tabs.count - 1
-        } else if selectedIndex > index {
-            selectedIndex -= 1
-        }
-
-        selectTab(selectedIndex)
-        updateTabBar()
-    }
-
-    func updateTabBar() {
-        tabBar.tabs = tabs
-        tabBar.selectedIndex = selectedIndex
-        tabBar.needsDisplay = true
-    }
-
-    func updateWindowTitle() {
-        if selectedIndex < tabs.count {
-            let tab = tabs[selectedIndex]
-            window.title = "Crystl \u{2014} \(tab.title)"
-            let cwdDisplay = (tab.cwd as NSString).abbreviatingWithTildeInPath
-            projectLabel.stringValue = "\(tab.title)  \u{2022}  \(cwdDisplay)"
-        }
-    }
-
-    // ── LocalProcessTerminalViewDelegate ──
+    // MARK: - LocalProcessTerminalViewDelegate
 
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
 
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            if let tab = self.tabs.first(where: { $0.terminalView === source }) {
-                tab.title = title
-                self.updateTabBar()
-                self.updateWindowTitle()
+            for project in self.projects {
+                if let session = project.sessions.first(where: { $0.terminalView === source }) {
+                    if !session.hasCustomName { session.name = title }
+                    self.updateSessionBar()
+                    self.updateWindowTitle()
+                    // Title change may indicate agent launch/exit — rescan immediately
+                    self.agentMonitor?.scanNow()
+                    self.updateAgentUI()
+                    return
+                }
             }
         }
     }
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            if let dir = directory,
-               let lpv = source as? LocalProcessTerminalView,
-               let tab = self.tabs.first(where: { $0.terminalView === lpv }) {
-                tab.cwd = dir
-                if !tab.hasCustomTitle {
-                    tab.title = (dir as NSString).lastPathComponent
-                    self.updateTabBar()
+            guard let self = self, let dir = directory,
+                  let lpv = source as? LocalProcessTerminalView else { return }
+            for project in self.projects {
+                if let session = project.sessions.first(where: { $0.terminalView === lpv }) {
+                    session.cwd = dir
+                    if !project.hasCustomTitle {
+                        project.title = (dir as NSString).lastPathComponent
+                        self.updateTabBar()
+                    }
                     self.updateWindowTitle()
+                    self.onTabUpdated?(project.id, project.title, project.directory)
+                    return
                 }
-                self.onTabUpdated?(tab.id, tab.title, tab.cwd)
             }
         }
     }
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            if let lpv = source as? LocalProcessTerminalView,
-               let idx = self.tabs.firstIndex(where: { $0.terminalView === lpv }) {
-                let tab = self.tabs[idx]
-                self.onProcessFinished?(tab.title, tab.cwd)
+            guard let self = self,
+                  let lpv = source as? LocalProcessTerminalView else { return }
+            for (pi, project) in self.projects.enumerated() {
+                if let si = project.sessions.firstIndex(where: { $0.terminalView === lpv }) {
+                    let session = project.sessions[si]
+                    self.onProcessFinished?(project.title, session.cwd)
 
-                if self.tabs.count > 1 {
-                    self.closeTab(idx)
-                } else {
-                    tab.start()
+                    if project.sessions.count > 1 {
+                        self.closeSession(si)
+                    } else if self.projects.count > 1 {
+                        self.closeProject(pi)
+                    } else {
+                        session.start()
+                    }
+                    return
                 }
             }
         }

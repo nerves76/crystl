@@ -43,6 +43,8 @@ cat > "$APP_DIR/Contents/Info.plist" << 'PLISTEOF'
     <string>Crystl</string>
     <key>CFBundleExecutable</key>
     <string>Crystl</string>
+    <key>CFBundleIconFile</key>
+    <string>crystl</string>
     <key>CFBundleVersion</key>
     <string>2.0</string>
     <key>LSMinimumSystemVersion</key>

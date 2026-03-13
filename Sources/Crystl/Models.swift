@@ -15,10 +15,91 @@ struct PendingRequest: Codable, Equatable {
     }
 }
 
+struct HookNotification: Codable, Equatable {
+    let id: String
+    let type: String              // "Stop", "PostToolUse", "SubagentStop", etc.
+    let session_id: String?
+    let cwd: String?
+    let created: Double
+
+    // Type-specific fields (optional, vary by type)
+    let tool_name: String?        // PostToolUse
+    let tool_response: String?    // PostToolUse (truncated)
+    let message: String?          // Stop (last_assistant_message), Notification
+    let title: String?            // Notification
+    let notification_type: String? // Notification subtype
+    let agent_id: String?         // SubagentStop
+    let agent_type: String?       // SubagentStop
+    let task_subject: String?     // TaskCompleted
+    let teammate_name: String?    // TeammateIdle
+    let team_name: String?        // TeammateIdle
+    let reason: String?           // SessionEnd
+    let error: String?            // PostToolUseFailure
+
+    static func == (lhs: HookNotification, rhs: HookNotification) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    /// Human-readable headline for the notification panel
+    var headline: String {
+        switch type {
+        case "Stop":              return "Claude finished"
+        case "SessionEnd":        return "Session ended"
+        case "PostToolUse":       return "Tool completed: \(tool_name ?? "Unknown")"
+        case "PostToolUseFailure":return "Tool failed: \(tool_name ?? "Unknown")"
+        case "SubagentStop":      return "Agent finished"
+        case "TaskCompleted":     return "Task completed"
+        case "TeammateIdle":      return "\(teammate_name ?? "Teammate") is idle"
+        case "Notification":      return title ?? "Claude notification"
+        default:                  return type
+        }
+    }
+
+    /// Human-readable subtitle for the notification panel
+    var subtitle: String {
+        switch type {
+        case "Stop":
+            if let msg = message, !msg.isEmpty {
+                return String(msg.prefix(80))
+            }
+            return "Session idle"
+        case "SessionEnd":
+            if let r = reason { return r }
+            if let cwd = cwd { return (cwd as NSString).lastPathComponent }
+            return ""
+        case "PostToolUse":
+            return tool_response.map { String($0.prefix(80)) } ?? ""
+        case "PostToolUseFailure":
+            return error.map { String($0.prefix(80)) } ?? "Unknown error"
+        case "SubagentStop":
+            return agent_type ?? "Subagent"
+        case "TaskCompleted":
+            return task_subject ?? ""
+        case "TeammateIdle":
+            return team_name ?? ""
+        case "Notification":
+            return message ?? ""
+        default:
+            return ""
+        }
+    }
+}
+
+struct EnabledNotifications: Codable {
+    var Stop: Bool?
+    var PostToolUse: Bool?
+    var SubagentStop: Bool?
+    var TaskCompleted: Bool?
+    var Notification: Bool?
+    var TeammateIdle: Bool?
+    var SessionEnd: Bool?
+}
+
 struct BridgeSettings: Codable {
     var autoApproveMode: String
     var paused: Bool?
     var sessionOverrides: [String: String]?
+    var enabledNotifications: EnabledNotifications?
 }
 
 struct SessionInfo: Codable {
@@ -41,6 +122,7 @@ struct HistoryEntry: Codable {
 
 struct PollResponse: Codable {
     let pending: [PendingRequest]
+    let notifications: [HookNotification]?
     let sessions: [SessionInfo]?
     let history: [HistoryEntry]?
     let settings: BridgeSettings?

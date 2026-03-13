@@ -37,6 +37,33 @@ func roundedMaskImage(size: NSSize, radius: CGFloat) -> NSImage {
     }
 }
 
+// ── Gray Slider Cell ──
+
+/// NSSliderCell that draws a neutral gray track and knob instead of the system accent color.
+class GraySliderCell: NSSliderCell {
+    override func drawBar(inside rect: NSRect, flipped: Bool) {
+        let trackRect = NSRect(x: rect.origin.x, y: rect.midY - 1.5, width: rect.width, height: 3)
+        NSColor(white: 1.0, alpha: 0.15).setFill()
+        NSBezierPath(roundedRect: trackRect, xRadius: 1.5, yRadius: 1.5).fill()
+
+        // Filled portion
+        let fraction = CGFloat((doubleValue - minValue) / (maxValue - minValue))
+        let filledWidth = trackRect.width * fraction
+        let filledRect = NSRect(x: trackRect.origin.x, y: trackRect.origin.y, width: filledWidth, height: trackRect.height)
+        NSColor(white: 1.0, alpha: 0.4).setFill()
+        NSBezierPath(roundedRect: filledRect, xRadius: 1.5, yRadius: 1.5).fill()
+    }
+
+    override func drawKnob(_ knobRect: NSRect) {
+        let knobSize: CGFloat = 10
+        let barRect = barRect(flipped: controlView?.isFlipped ?? false)
+        let centerY = barRect.midY
+        let r = NSRect(x: knobRect.midX - knobSize / 2, y: centerY - knobSize / 2, width: knobSize, height: knobSize)
+        NSColor(white: 0.85, alpha: 1.0).setFill()
+        NSBezierPath(ovalIn: r).fill()
+    }
+}
+
 // ── Session Colors ──
 // Each Claude Code session gets a unique muted color for visual identification
 // across approval panels and tab accents.
@@ -117,7 +144,7 @@ func makeGlassPanel(
     x: CGFloat,
     y: CGFloat,
     cornerRadius: CGFloat = 16,
-    glassAlpha: CGFloat = 0.7,
+    glassAlpha: CGFloat = -1,
     borderAlpha: CGFloat = 0.7,
     movable: Bool = false
 ) -> (NSPanel, NSVisualEffectView) {
@@ -137,9 +164,14 @@ func makeGlassPanel(
     panel.isOpaque = false
     panel.hasShadow = true
 
+    let resolvedAlpha: CGFloat = {
+        if glassAlpha >= 0 { return glassAlpha }
+        let saved = UserDefaults.standard.double(forKey: "windowOpacity")
+        return saved > 0.01 ? CGFloat(saved) : 0.85
+    }()
     let glass = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
     glass.material = .hudWindow
-    glass.alphaValue = glassAlpha
+    glass.alphaValue = resolvedAlpha
     glass.blendingMode = .behindWindow
     glass.state = .active
     glass.appearance = NSAppearance(named: .darkAqua)

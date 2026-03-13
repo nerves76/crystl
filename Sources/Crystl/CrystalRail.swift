@@ -10,20 +10,22 @@ import Cocoa
 
 // MARK: - Rail Tile Data
 
-/// Holds the state for one tile in the rail, mapped 1:1 to a TerminalTab.
+/// Holds the state for one tile in the rail, mapped 1:1 to a ProjectTab.
 class RailTile {
     let tabId: UUID
     var title: String
     var color: NSColor
     var cwd: String
+    var iconName: String?
     var pendingCount: Int = 0
     var isSelected: Bool = false
 
-    init(tabId: UUID, title: String, color: NSColor, cwd: String) {
+    init(tabId: UUID, title: String, color: NSColor, cwd: String, iconName: String? = nil) {
         self.tabId = tabId
         self.title = title
         self.color = color
         self.cwd = cwd
+        self.iconName = iconName
     }
 }
 
@@ -34,9 +36,13 @@ class RailTile {
 class RailTileView: NSView {
     var tile: RailTile
     var onClick: ((UUID) -> Void)?
+    var onChangeIcon: ((UUID) -> Void)?
     private var shimmerLayer: CAGradientLayer?
     private var isPulsing = false
+    private var isHovered = false
     private var badgeLabel: NSTextField?
+    private var crystalOverlay: NSImageView?
+    private var trackingArea: NSTrackingArea?
 
     init(tile: RailTile, frame: NSRect) {
         self.tile = tile
@@ -44,11 +50,81 @@ class RailTileView: NSView {
         wantsLayer = true
         layer?.cornerRadius = 10
         setupBadge()
+        setupCrystalOverlay()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let ta = trackingArea { removeTrackingArea(ta) }
+        trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea!)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        showCrystalOverlay()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+        hideCrystalOverlay()
+    }
+
+    private func setupCrystalOverlay() {
+        let imgView = NSImageView(frame: bounds.insetBy(dx: 5, dy: 5))
+        imgView.imageScaling = .scaleProportionallyUpOrDown
+        imgView.alphaValue = 0
+        imgView.wantsLayer = true
+        addSubview(imgView)
+        crystalOverlay = imgView
+    }
+
+    private func showCrystalOverlay() {
+        guard let overlay = crystalOverlay else { return }
+        // Load and tint the crystal image with the tile's color
+        if let path = Bundle.main.path(forResource: "white-diamond-top", ofType: "png"),
+           let img = NSImage(contentsOfFile: path) {
+            img.size = NSSize(width: bounds.width - 10, height: bounds.height - 10)
+            overlay.image = img
+            overlay.contentTintColor = tile.color
+        }
+        overlay.frame = bounds.insetBy(dx: 5, dy: 5)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.2
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            overlay.animator().alphaValue = 0.85
+        }
+    }
+
+    private func hideCrystalOverlay() {
+        guard let overlay = crystalOverlay else { return }
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.25
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            overlay.animator().alphaValue = 0
+        }
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let menu = NSMenu()
+        let changeItem = NSMenuItem(title: "Change Icon...", action: #selector(changeIconClicked), keyEquivalent: "")
+        changeItem.target = self
+        menu.addItem(changeItem)
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func changeIconClicked() {
+        onChangeIcon?(tile.tabId)
+    }
 
     private func setupBadge() {
         let badge = NSTextField(labelWithString: "")
@@ -81,25 +157,37 @@ class RailTileView: NSView {
         ctx.addPath(bgPath)
         ctx.strokePath()
 
-        // Initial letter(s)
-        let initial = projectInitial(tile.title)
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 16, weight: .semibold),
-            .foregroundColor: NSColor.white.withAlphaComponent(tile.isSelected ? 1.0 : 0.7)
-        ]
-        let str = initial as NSString
-        let sz = str.size(withAttributes: attrs)
-        let textRect = NSRect(
-            x: (bounds.width - sz.width) / 2,
-            y: (bounds.height - sz.height) / 2,
-            width: sz.width,
-            height: sz.height
-        )
-        str.draw(in: textRect, withAttributes: attrs)
+        // Icon or initial letter
+        let iconAlpha: CGFloat = tile.isSelected ? 1.0 : 0.7
+        if let name = tile.iconName,
+           let icon = LucideIcons.render(name: name, size: 20, color: tile.color.withAlphaComponent(iconAlpha)) {
+            let iconRect = NSRect(
+                x: (bounds.width - 20) / 2,
+                y: (bounds.height - 20) / 2,
+                width: 20, height: 20
+            )
+            icon.draw(in: iconRect)
+        } else {
+            let initial = projectInitial(tile.title)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 16, weight: .semibold),
+                .foregroundColor: NSColor.white.withAlphaComponent(iconAlpha)
+            ]
+            let str = initial as NSString
+            let sz = str.size(withAttributes: attrs)
+            let textRect = NSRect(
+                x: (bounds.width - sz.width) / 2,
+                y: (bounds.height - sz.height) / 2,
+                width: sz.width,
+                height: sz.height
+            )
+            str.draw(in: textRect, withAttributes: attrs)
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
         onClick?(tile.tabId)
+        onChangeIcon?(tile.tabId)
     }
 
     func update() {
@@ -311,15 +399,19 @@ class RailAddButton: NSView {
 // MARK: - New Project Panel
 
 /// A floating glass input panel for creating a new project folder.
+/// Includes name field, icon picker grid, and color picker.
 class NewProjectPanel: NSObject {
     private var panel: NSPanel?
-    var onSubmit: ((String) -> Void)?
+    private var nameField: NSTextField?
+    private var iconGrid: IconGridView?
+    private var colorGrid: ColorGridView?
+    var onSubmit: ((String, String?, String?) -> Void)?  // (name, iconName, colorHex)
 
     func show(relativeTo railPanel: NSPanel) {
         dismiss()
 
-        let panelWidth: CGFloat = 260
-        let panelHeight: CGFloat = 100
+        let panelWidth: CGFloat = 320
+        let panelHeight: CGFloat = 420
 
         // Position to the right of the rail
         let railFrame = railPanel.frame
@@ -353,15 +445,18 @@ class NewProjectPanel: NSObject {
         glass.layer?.borderWidth = 0.5
         glass.layer?.borderColor = NSColor(white: 1.0, alpha: 0.3).cgColor
 
+        var y0 = panelHeight - 28
+
         // Label
         let label = NSTextField(labelWithString: "New Project")
         label.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         label.textColor = .white
-        label.frame = NSRect(x: 16, y: panelHeight - 28, width: panelWidth - 32, height: 18)
+        label.frame = NSRect(x: 16, y: y0, width: panelWidth - 32, height: 18)
         glass.addSubview(label)
+        y0 -= 30
 
-        // Text field
-        let field = NSTextField(frame: NSRect(x: 16, y: 36, width: panelWidth - 32, height: 24))
+        // Name field
+        let field = NSTextField(frame: NSRect(x: 16, y: y0, width: panelWidth - 32, height: 24))
         field.placeholderString = "project-name"
         field.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         field.textColor = .white
@@ -375,13 +470,82 @@ class NewProjectPanel: NSObject {
         field.target = self
         field.action = #selector(fieldSubmitted(_:))
         glass.addSubview(field)
+        nameField = field
+        y0 -= 28
 
-        // Hint
-        let hint = NSTextField(labelWithString: "Enter name, press Return")
-        hint.font = NSFont.systemFont(ofSize: 9, weight: .regular)
-        hint.textColor = NSColor(white: 1.0, alpha: 0.3)
-        hint.frame = NSRect(x: 16, y: 12, width: panelWidth - 32, height: 14)
-        glass.addSubview(hint)
+        // Color section
+        let colorLabel = NSTextField(labelWithString: "COLOR")
+        colorLabel.font = NSFont.systemFont(ofSize: 9, weight: .medium)
+        colorLabel.textColor = NSColor(white: 1.0, alpha: 0.4)
+        colorLabel.frame = NSRect(x: 16, y: y0, width: panelWidth - 32, height: 12)
+        glass.addSubview(colorLabel)
+        y0 -= 32
+
+        let cGrid = ColorGridView(frame: NSRect(x: 16, y: y0, width: panelWidth - 32, height: 28))
+        glass.addSubview(cGrid)
+        colorGrid = cGrid
+        y0 -= 22
+
+        // Icon section
+        let iconLabel = NSTextField(labelWithString: "ICON")
+        iconLabel.font = NSFont.systemFont(ofSize: 9, weight: .medium)
+        iconLabel.textColor = NSColor(white: 1.0, alpha: 0.4)
+        iconLabel.frame = NSRect(x: 16, y: y0, width: panelWidth - 32, height: 12)
+        glass.addSubview(iconLabel)
+        y0 -= 6
+
+        // Search field for icons
+        let searchField = NSTextField(frame: NSRect(x: 16, y: y0 - 20, width: panelWidth - 32, height: 20))
+        searchField.placeholderString = "Search icons..."
+        searchField.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        searchField.textColor = .white
+        searchField.backgroundColor = NSColor(white: 1.0, alpha: 0.06)
+        searchField.isBordered = false
+        searchField.isBezeled = false
+        searchField.focusRingType = .none
+        searchField.drawsBackground = true
+        searchField.wantsLayer = true
+        searchField.layer?.cornerRadius = 4
+        glass.addSubview(searchField)
+        y0 -= 26
+
+        // Icon grid (scrollable)
+        let gridHeight = y0 - 48
+        let scrollView = NSScrollView(frame: NSRect(x: 16, y: 48, width: panelWidth - 32, height: gridHeight))
+        scrollView.hasVerticalScroller = true
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.autohidesScrollers = true
+
+        let iGrid = IconGridView(frame: NSRect(x: 0, y: 0, width: panelWidth - 32, height: gridHeight), containerWidth: panelWidth - 32)
+        iGrid.selectedColor = cGrid.selectedColor
+        scrollView.documentView = iGrid
+        glass.addSubview(scrollView)
+        iconGrid = iGrid
+
+        // Wire color changes to icon grid
+        cGrid.onColorChanged = { [weak iGrid] color in
+            iGrid?.selectedColor = color
+            iGrid?.needsDisplay = true
+        }
+
+        // Wire search to icon grid
+        searchField.target = self
+        searchField.action = #selector(searchChanged(_:))
+
+        // Create button
+        let createBtn = NSButton(frame: NSRect(x: 16, y: 12, width: panelWidth - 32, height: 28))
+        createBtn.title = "Create Project"
+        createBtn.bezelStyle = .rounded
+        createBtn.isBordered = false
+        createBtn.wantsLayer = true
+        createBtn.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.3).cgColor
+        createBtn.layer?.cornerRadius = 6
+        createBtn.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        createBtn.contentTintColor = NSColor.systemGreen
+        createBtn.target = self
+        createBtn.action = #selector(createClicked)
+        glass.addSubview(createBtn)
 
         p.contentView = glass
         p.orderFrontRegardless()
@@ -392,19 +556,39 @@ class NewProjectPanel: NSObject {
     }
 
     @objc private func fieldSubmitted(_ sender: NSTextField) {
-        let name = sender.stringValue.trimmingCharacters(in: .whitespaces)
+        submitProject()
+    }
+
+    @objc private func createClicked() {
+        submitProject()
+    }
+
+    @objc private func searchChanged(_ sender: NSTextField) {
+        iconGrid?.filterText = sender.stringValue
+    }
+
+    private func submitProject() {
+        let name = nameField?.stringValue.trimmingCharacters(in: .whitespaces) ?? ""
         guard !name.isEmpty else { return }
-        onSubmit?(name)
+        let iconName = iconGrid?.selectedIcon
+        let colorHex = colorGrid?.selectedColor.hexString
+        onSubmit?(name, iconName, colorHex)
         dismiss()
     }
 
     func dismiss() {
-        // Break the retain cycle: field.target -> self -> panel -> contentView -> field
+        // Break retain cycles from field targets
         if let contentView = panel?.contentView {
             for subview in contentView.subviews {
                 if let field = subview as? NSTextField, field.target === self {
                     field.target = nil
                     field.action = nil
+                }
+            }
+            for subview in contentView.subviews {
+                if let btn = subview as? NSButton, btn.target === self {
+                    btn.target = nil
+                    btn.action = nil
                 }
             }
         }
@@ -476,9 +660,11 @@ class CrystalRailController {
     var onTileClicked: ((UUID) -> Void)?
     var onFolderDropped: ((String) -> Void)?
     var onAddClicked: (() -> Void)?
-    var onNewProject: ((String) -> Void)?
+    var onNewProject: ((String, String?, String?) -> Void)?  // (name, iconName, colorHex)
+    var onChangeIcon: ((UUID) -> Void)?
     var onSettingsIconClicked: ((NSView) -> Void)?
     private var newProjectPanel = NewProjectPanel()
+    private weak var glassView: NSVisualEffectView?
 
     private let railWidth: CGFloat = 52
     private let tileSize: CGFloat = 38
@@ -516,14 +702,16 @@ class CrystalRailController {
         panel.isMovableByWindowBackground = false
         panel.titlebarAppearsTransparent = true
         panel.titleVisibility = .hidden
-        panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = true
 
-        // Glass background
+        // Glass background — match window opacity
+        let savedOpacity = UserDefaults.standard.double(forKey: "windowOpacity")
+        let resolvedOpacity: CGFloat = savedOpacity > 0.01 ? CGFloat(savedOpacity) : 0.85
+        panel.backgroundColor = NSColor(white: 0.1, alpha: resolvedOpacity)
         let glass = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: railWidth, height: initialHeight))
         glass.material = .hudWindow
-        glass.alphaValue = 0.7
+        glass.alphaValue = resolvedOpacity
         glass.blendingMode = .behindWindow
         glass.state = .active
         glass.autoresizingMask = [.width, .height]
@@ -563,17 +751,25 @@ class CrystalRailController {
         addBtn.onClick = { [weak self] in
             self?.showNewProjectPanel()
         }
-        newProjectPanel.onSubmit = { [weak self] name in
-            self?.onNewProject?(name)
+        newProjectPanel.onSubmit = { [weak self] name, iconName, colorHex in
+            self?.onNewProject?(name, iconName, colorHex)
         }
         glass.addSubview(addBtn)
         addButton = addBtn
 
         contentView = glass
+        glassView = glass
         panel.contentView = glass
         panel.orderFrontRegardless()
 
         animateRailOpen()
+    }
+
+    // MARK: - Opacity
+
+    func setOpacity(_ alpha: CGFloat) {
+        glassView?.alphaValue = alpha
+        panel?.backgroundColor = NSColor(white: 0.1, alpha: alpha)
     }
 
     // MARK: - New Project
@@ -585,10 +781,10 @@ class CrystalRailController {
 
     // MARK: - Tile Management
 
-    func addTile(tab: TerminalTab) {
+    func addTile(tab: ProjectTab) {
         // Prevent duplicate tiles
         guard !tiles.contains(where: { $0.tabId == tab.id }) else { return }
-        let tile = RailTile(tabId: tab.id, title: tab.title, color: tab.color, cwd: tab.cwd)
+        let tile = RailTile(tabId: tab.id, title: tab.title, color: tab.color, cwd: tab.directory, iconName: tab.iconName)
         tiles.append(tile)
         NSLog("CrystalRail: addTile '\(tab.title)' — total tiles: \(tiles.count)")
 
@@ -596,6 +792,9 @@ class CrystalRailController {
         let tileView = RailTileView(tile: tile, frame: tileFrame)
         tileView.onClick = { [weak self] tabId in
             self?.onTileClicked?(tabId)
+        }
+        tileView.onChangeIcon = { [weak self] tabId in
+            self?.onChangeIcon?(tabId)
         }
         tileViews[tab.id] = tileView
         contentView.addSubview(tileView)
@@ -628,10 +827,12 @@ class CrystalRailController {
         }
     }
 
-    func updateTile(tabId: UUID, title: String, cwd: String) {
+    func updateTile(tabId: UUID, title: String, cwd: String, iconName: String? = nil, color: NSColor? = nil) {
         guard let tile = tiles.first(where: { $0.tabId == tabId }) else { return }
         tile.title = title
         tile.cwd = cwd
+        if let name = iconName { tile.iconName = name }
+        if let c = color { tile.color = c }
         tileViews[tabId]?.update()
     }
 

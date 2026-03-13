@@ -28,7 +28,8 @@ class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NST
         let isParent: Bool
     }
 
-    /// Show the picker as an overlay inside the given parent view.
+    /// Show the picker as an overlay anchored to the top-left of the parent view.
+    /// Layout (top to bottom): search field, directory list, path label.
     func show(in parent: NSView, projectsDir: String) {
         dismiss()
 
@@ -42,13 +43,13 @@ class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NST
 
         loadEntries()
 
-        let w: CGFloat = min(parent.bounds.width - 60, 500)
-        let h: CGFloat = min(parent.bounds.height - 40, 380)
-        let x = (parent.bounds.width - w) / 2
-        let y = (parent.bounds.height - h) / 2
+        let w: CGFloat = min(parent.bounds.width - 24, 460)
+        let h: CGFloat = min(parent.bounds.height - 20, 360)
+        let x: CGFloat = 0
+        let y: CGFloat = -20
 
         let container = NSView(frame: NSRect(x: x, y: y, width: w, height: h))
-        container.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+        container.autoresizingMask = [.maxXMargin, .maxYMargin]
         container.wantsLayer = true
         container.layer?.cornerRadius = 12
         container.layer?.masksToBounds = true
@@ -67,37 +68,51 @@ class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NST
         container.layer?.borderWidth = 0.5
         container.layer?.borderColor = NSColor(white: 1.0, alpha: 0.3).cgColor
 
-        // Search field
-        let field = NSTextField(frame: NSRect(x: 16, y: h - 40, width: w - 32, height: 28))
-        field.placeholderString = "Search directories..."
+        // ── Search field at the top ──
+        let searchY = h - 40
+        let field = NSTextField(frame: NSRect(x: 12, y: searchY, width: w - 24, height: 32))
+        field.placeholderAttributedString = NSAttributedString(
+            string: "Search directories...",
+            attributes: [
+                .foregroundColor: NSColor(white: 1.0, alpha: 0.45),
+                .font: NSFont.systemFont(ofSize: 14, weight: .regular)
+            ]
+        )
         field.font = NSFont.systemFont(ofSize: 14, weight: .regular)
         field.textColor = .white
-        field.backgroundColor = NSColor(white: 1.0, alpha: 0.06)
+        field.backgroundColor = NSColor(white: 1.0, alpha: 0.08)
         field.isBordered = false
         field.isBezeled = false
         field.drawsBackground = true
         field.focusRingType = .none
         field.wantsLayer = true
-        field.layer?.cornerRadius = 6
+        field.layer?.cornerRadius = 12
+        field.layer?.masksToBounds = true
         field.delegate = self
         field.target = self
         field.action = #selector(searchSubmitted(_:))
         container.addSubview(field)
         searchField = field
 
-        // Path label at bottom
+        // ── Path label at the bottom ──
         let pathLbl = NSTextField(labelWithString: "")
-        pathLbl.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        pathLbl.textColor = NSColor(white: 1.0, alpha: 0.35)
-        pathLbl.frame = NSRect(x: 16, y: 8, width: w - 32, height: 16)
+        pathLbl.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
+        pathLbl.textColor = NSColor(white: 1.0, alpha: 0.5)
+        pathLbl.wantsLayer = true
+        pathLbl.layer?.cornerRadius = 6
+        pathLbl.layer?.borderWidth = 0.5
+        pathLbl.layer?.borderColor = NSColor(white: 1.0, alpha: 0.15).cgColor
+        pathLbl.frame = NSRect(x: 12, y: 10, width: w - 24, height: 22)
         pathLbl.lineBreakMode = .byTruncatingMiddle
         container.addSubview(pathLbl)
         pathLabel = pathLbl
         updatePathLabel()
 
-        // Table view
-        let tableH = h - 40 - 8 - 32 // search field + gap + path label
-        let sv = NSScrollView(frame: NSRect(x: 0, y: 28, width: w, height: tableH))
+        // ── Table view — between search and path label ──
+        let tableBottom: CGFloat = 40
+        let tableTop = searchY - 6
+        let tableH = tableTop - tableBottom
+        let sv = NSScrollView(frame: NSRect(x: 0, y: tableBottom, width: w, height: tableH))
         sv.hasVerticalScroller = true
         sv.hasHorizontalScroller = false
         sv.autohidesScrollers = true
@@ -109,8 +124,8 @@ class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NST
         tv.backgroundColor = .clear
         tv.gridStyleMask = []
         tv.selectionHighlightStyle = .regular
-        tv.rowHeight = 28
-        tv.intercellSpacing = NSSize(width: 0, height: 1)
+        tv.rowHeight = 36
+        tv.intercellSpacing = NSSize(width: 0, height: 2)
         tv.dataSource = self
         tv.delegate = self
         tv.appearance = NSAppearance(named: .darkAqua)
@@ -129,14 +144,16 @@ class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NST
         parent.addSubview(container, positioned: .above, relativeTo: nil)
         overlay = container
 
-        // Animate in
+        // Animate in — slide up from bottom
         container.alphaValue = 0
-        container.layer?.transform = CATransform3DMakeScale(0.95, 0.95, 1.0)
+        let startFrame = NSRect(x: x, y: y - 20, width: w, height: h)
+        let endFrame = NSRect(x: x, y: y, width: w, height: h)
+        container.frame = startFrame
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.2
             ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
             container.animator().alphaValue = 1.0
-            container.layer?.transform = CATransform3DIdentity
+            container.animator().frame = endFrame
         }
 
         // Focus the search field
@@ -207,7 +224,7 @@ class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NST
 
     private func updatePathLabel() {
         let display = (currentPath as NSString).abbreviatingWithTildeInPath
-        pathLabel?.stringValue = "\u{1F4C1} \(display)"
+        pathLabel?.stringValue = display
     }
 
     private func navigateTo(_ path: String) {
@@ -321,28 +338,34 @@ class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NST
         guard row < filtered.count else { return nil }
         let entry = filtered[row]
 
-        let cell = NSView(frame: NSRect(x: 0, y: 0, width: tableView.bounds.width, height: 28))
+        let rowH: CGFloat = 36
+        let cell = NSView(frame: NSRect(x: 0, y: 0, width: tableView.bounds.width, height: rowH))
 
-        // Icon
-        let icon: String
+        // Icon — Lucide icons for folders, arrow for parent, file icon for files
+        let iconSize: CGFloat = 18
+        let iconY = (rowH - iconSize) / 2
         if entry.isParent {
-            icon = "\u{2191}"  // ↑
-        } else if entry.isDirectory {
-            icon = "\u{1F4C1}" // 📁
-        } else {
-            icon = "\u{1F4C4}" // 📄
+            let iconLabel = NSTextField(labelWithString: "\u{2191}")
+            iconLabel.font = NSFont.systemFont(ofSize: 15)
+            iconLabel.textColor = NSColor(white: 1.0, alpha: 0.5)
+            iconLabel.frame = NSRect(x: 16, y: iconY, width: 24, height: iconSize)
+            cell.addSubview(iconLabel)
+        } else if let img = LucideIcons.render(
+            name: entry.isDirectory ? "folder" : "file",
+            size: iconSize,
+            color: entry.isDirectory ? NSColor(white: 1.0, alpha: 0.7) : NSColor(white: 1.0, alpha: 0.4)
+        ) {
+            let iconView = NSImageView(frame: NSRect(x: 16, y: iconY, width: iconSize, height: iconSize))
+            iconView.image = img
+            cell.addSubview(iconView)
         }
-        let iconLabel = NSTextField(labelWithString: icon)
-        iconLabel.font = NSFont.systemFont(ofSize: 13)
-        iconLabel.frame = NSRect(x: 16, y: 4, width: 24, height: 20)
-        cell.addSubview(iconLabel)
 
         // Name
         let nameLabel = NSTextField(labelWithString: entry.name)
-        nameLabel.font = NSFont.systemFont(ofSize: 13, weight: entry.isDirectory ? .medium : .regular)
-        nameLabel.textColor = entry.isDirectory ? .white : NSColor(white: 1.0, alpha: 0.6)
+        nameLabel.font = NSFont.systemFont(ofSize: 14, weight: entry.isDirectory ? .medium : .regular)
+        nameLabel.textColor = entry.isDirectory ? .white : NSColor(white: 1.0, alpha: 0.5)
         nameLabel.lineBreakMode = .byTruncatingTail
-        nameLabel.frame = NSRect(x: 44, y: 4, width: tableView.bounds.width - 60, height: 20)
+        nameLabel.frame = NSRect(x: 48, y: (rowH - 20) / 2, width: tableView.bounds.width - 64, height: 20)
         cell.addSubview(nameLabel)
 
         return cell

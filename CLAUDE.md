@@ -57,6 +57,52 @@ Keep source files under **500 lines**. Current violations to address:
 - `?.` optional chaining for the `rail` property and any optional controller references
 - Shell commands sent to terminal must use `shellEscape()` (single-quote wrapping)
 
+## UI Style Guide
+
+### Corner Radii
+- **12px** — containers, panels, overlays, search fields (DirectoryPicker, glass panels)
+- **8px** — input fields, buttons, controls (settings fields, Browse button, popup buttons)
+- **16px** — window `contentView` corner radius
+- Always set `layer?.masksToBounds = true` when using `cornerRadius` on NSTextField (otherwise background won't clip)
+
+### Spacing (Settings / Forms)
+- `sectionToHeader: 16` — section header to first field label
+- `labelToControl: 16` — field label to its control
+- `controlToLabel: 10` — control to next field label
+- `sectionBreak: 20` — control to next section header
+- `labelH: 14` — label text height
+- `controlH: 28` — standard control height (fields, buttons, popups)
+
+### Typography
+- **Window title**: 22pt semibold
+- **Section headers**: 10pt bold, uppercase (e.g. "GENERAL", "CLAUDE")
+- **Field labels**: 9pt semibold, uppercase (e.g. "BRIDGE PORT")
+- **Body / field text**: 12pt mono regular
+- **Tab bar titles**: 11.5pt mono
+- **Directory picker rows**: 14pt system, medium weight for folders, regular for files
+
+### Colors
+- **Section headers / field labels**: `white alpha 0.7`
+- **Body text**: `white`
+- **Secondary / dim text**: `white alpha 0.5`
+- **Empty state text**: `white alpha 0.35`
+- **Field backgrounds**: `white alpha 0.12`
+- **Button tint (secondary)**: `white alpha 0.6`
+- **Borders**: `white alpha 0.15–0.3`
+
+### Glass Panels
+- Material: `.hudWindow`
+- Appearance: `.darkAqua`
+- Blending: `.behindWindow`
+- State: `.active`
+- Never use solid opaque backgrounds — preserve transparency
+
+### General Rules
+- Non-flipped NSView coordinates: y increases upward. Label-to-control gap must be >= `controlH - labelH` to prevent overlap.
+- Use `layer?.opacity = 0` (not just `isHidden = true`) to prevent layer content bleeding through glass effects.
+- Z-order for clickable areas: add the visual label first, then the transparent click target on top.
+- Animations: use fluid timing `CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)` for open/slide effects.
+
 ## Known Issues / Tech Debt
 
 - **KVO leak**: `makeTerminalTransparent` adds observer on `layer.backgroundColor` but never removes it. Fix: switch to block-based KVO and store in `scrollerObservers`.

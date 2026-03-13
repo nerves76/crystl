@@ -4,7 +4,7 @@
 //   - ShellIntegration: Sets up ZDOTDIR to inject zsh preexec/precmd hooks
 //     that emit OSC 7770 escape sequences marking command start/end.
 //   - CommandHistoryLogger: Registers an OSC 7770 handler on a SwiftTerm
-//     terminal, parses the sequences, and writes entries to .crystl/history/
+//     terminal, parses the sequences, and writes entries to .crystl-agent-history/history/
 //     in the project directory. Format is agent-friendly markdown with
 //     timestamps, exit codes, duration, and working directory.
 
@@ -63,11 +63,16 @@ class ShellIntegration {
         try? FileManager.default.removeItem(atPath: zdotdir)
     }
 
-    /// Returns the current process environment with ZDOTDIR overridden.
+    /// Returns the current process environment with ZDOTDIR overridden
+    /// and terminal capability variables set so TUI apps (Claude Code, etc.)
+    /// know they can use truecolor and Unicode box-drawing characters.
     func environment() -> [String] {
         var env = ProcessInfo.processInfo.environment
         env["ZDOTDIR"] = zdotdir
         env["CRYSTL_SHELL_INTEGRATION"] = "1"
+        env["TERM"] = "xterm-256color"
+        env["COLORTERM"] = "truecolor"
+        env["TERM_PROGRAM"] = "Crystl"
         // Remove Claude Code session marker so terminals can launch fresh claude instances
         env.removeValue(forKey: "CLAUDECODE")
         return env.map { "\($0.key)=\($0.value)" }
@@ -126,7 +131,7 @@ private struct PendingCommand {
 }
 
 /// Registers an OSC 7770 handler on a SwiftTerm terminal and writes
-/// command history to .crystl/history/ in the project directory.
+/// command history to .crystl-agent-history/history/ in the project directory.
 class CommandHistoryLogger {
     private var pending: PendingCommand?
     private weak var terminalView: LocalProcessTerminalView?
@@ -201,7 +206,7 @@ class CommandHistoryLogger {
 
     private func writeEntry(command: String, cwd: String, projectDir: String, exitCode: Int, duration: Int, startTime: TimeInterval) {
         let fm = FileManager.default
-        let historyDir = projectDir + "/.crystl/history"
+        let historyDir = projectDir + "/.crystl-agent-history/history"
 
         // Initialize directory structure on first write
         if !initializedDirs.contains(projectDir) {
@@ -256,7 +261,7 @@ class CommandHistoryLogger {
 
     private func initializeDirectory(projectDir: String) {
         let fm = FileManager.default
-        let crystlDir = projectDir + "/.crystl"
+        let crystlDir = projectDir + "/.crystl-agent-history"
 
         try? fm.createDirectory(atPath: crystlDir + "/history", withIntermediateDirectories: true)
 
@@ -270,19 +275,20 @@ class CommandHistoryLogger {
         let indexPath = crystlDir + "/index.md"
         if !fm.fileExists(atPath: indexPath) {
             let index = """
-            # .crystl — Terminal History
+            # .crystl-agent-history — Terminal Command History
 
-            Command history logged by [Crystl](https://github.com/anthropics/crystl).
+            Command history logged by [Crystl](https://github.com/nerves76/crystl-app).
             Each command records timestamp, working directory, exit code, and duration.
+            Useful for agents to understand what commands have been run in this project.
 
             ## Files
             - `history/YYYY-MM-DD.md` — Daily logs with timestamped command entries
 
             ## Search examples
             ```
-            grep "swift build" .crystl/history/
-            grep "Exit: [^0]" .crystl/history/
-            grep "| npm" .crystl/history/2026-03-11.md
+            grep "swift build" .crystl-agent-history/history/
+            grep "Exit: [^0]" .crystl-agent-history/history/
+            grep "| npm" .crystl-agent-history/history/2026-03-12.md
             ```
 
             ## Entry format

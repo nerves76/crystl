@@ -1,10 +1,10 @@
 #!/bin/bash
-# test-panels.sh — Fire fake permission requests at the bridge to preview panel animations
+# test-panels.sh — Fire fake requests at the bridge to preview all panel types
 # Usage: ./test-panels.sh [delay_seconds]
-#   delay_seconds: time between panels (default 1.2)
+#   delay_seconds: time between panels (default 1.5)
 
 BRIDGE="http://127.0.0.1:19280"
-DELAY="${1:-1.2}"
+DELAY="${1:-1.5}"
 
 # Check bridge is running
 if ! curl -sf "$BRIDGE/health" > /dev/null 2>&1; then
@@ -16,9 +16,14 @@ fi
 echo "Sending test panels to Crystl (${DELAY}s between each)..."
 echo ""
 
-# ── 1. Bash command ──
-echo "→ Panel 1: Bash (rm -rf)"
-curl -sf -X POST "$BRIDGE/hook" \
+# ══════════════════════════════════════════
+# APPROVAL PANELS (PermissionRequest)
+# ══════════════════════════════════════════
+
+echo "── Approval Panels ──"
+
+echo "→ Bash (rm -rf)"
+curl -sf -X POST "$BRIDGE/hook?type=PermissionRequest" \
   -H "Content-Type: application/json" \
   -d '{
     "tool_name": "Bash",
@@ -26,12 +31,11 @@ curl -sf -X POST "$BRIDGE/hook" \
     "cwd": "/Users/chris/projects/webapp",
     "session_id": "sess-alpha-001",
     "permission_mode": "default"
-  }' > /dev/null
+  }' > /dev/null &
 sleep "$DELAY"
 
-# ── 2. Write file ──
-echo "→ Panel 2: Write (new file)"
-curl -sf -X POST "$BRIDGE/hook" \
+echo "→ Write (new file)"
+curl -sf -X POST "$BRIDGE/hook?type=PermissionRequest" \
   -H "Content-Type: application/json" \
   -d '{
     "tool_name": "Write",
@@ -39,60 +43,131 @@ curl -sf -X POST "$BRIDGE/hook" \
     "cwd": "/Users/chris/projects/webapp",
     "session_id": "sess-alpha-001",
     "permission_mode": "default"
-  }' > /dev/null
+  }' > /dev/null &
 sleep "$DELAY"
 
-# ── 3. Edit from different session ──
-echo "→ Panel 3: Edit (different session)"
-curl -sf -X POST "$BRIDGE/hook" \
+echo "→ Edit (different session)"
+curl -sf -X POST "$BRIDGE/hook?type=PermissionRequest" \
   -H "Content-Type: application/json" \
   -d '{
     "tool_name": "Edit",
-    "tool_input": {"file_path": "/Users/chris/Nextcloud/crystl/Sources/Crystl/AppDelegate.swift", "old_string": "func poll()", "new_string": "func pollBridge()"},
+    "tool_input": {"file_path": "Sources/Crystl/AppDelegate.swift", "old_string": "func poll()", "new_string": "func pollBridge()"},
     "cwd": "/Users/chris/Nextcloud/crystl",
     "session_id": "sess-beta-002",
     "permission_mode": "acceptEdits"
-  }' > /dev/null
+  }' > /dev/null &
 sleep "$DELAY"
 
-# ── 4. Bash from third session ──
-echo "→ Panel 4: Bash (git push, third session)"
-curl -sf -X POST "$BRIDGE/hook" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tool_name": "Bash",
-    "tool_input": {"command": "git push origin main --force"},
-    "cwd": "/Users/chris/projects/api-server",
-    "session_id": "sess-gamma-003",
-    "permission_mode": "plan"
-  }' > /dev/null
-sleep "$DELAY"
+# ══════════════════════════════════════════
+# NOTIFICATIONS (fire-and-forget)
+# ══════════════════════════════════════════
 
-# ── 5. WebFetch ──
-echo "→ Panel 5: WebFetch"
-curl -sf -X POST "$BRIDGE/hook" \
+echo ""
+echo "── Notification Panels ──"
+
+echo "→ Stop: Claude finished"
+curl -sf -X POST "$BRIDGE/hook?type=Stop" \
   -H "Content-Type: application/json" \
   -d '{
-    "tool_name": "WebFetch",
-    "tool_input": {"url": "https://api.example.com/v2/deploy?env=production"},
-    "cwd": "/Users/chris/projects/webapp",
     "session_id": "sess-alpha-001",
-    "permission_mode": "default"
+    "cwd": "/Users/chris/projects/webapp",
+    "last_assistant_message": "I'\''ve finished refactoring the auth module. All tests pass and the login flow now uses JWT tokens with refresh rotation.",
+    "stop_hook_active": true
   }' > /dev/null
 sleep "$DELAY"
 
-# ── 6. Dangerous Bash ──
-echo "→ Panel 6: Bash (database drop)"
-curl -sf -X POST "$BRIDGE/hook" \
+echo "→ PostToolUse: Edit completed"
+curl -sf -X POST "$BRIDGE/hook?type=PostToolUse" \
   -H "Content-Type: application/json" \
   -d '{
-    "tool_name": "Bash",
-    "tool_input": {"command": "psql -c \"DROP TABLE users CASCADE\""},
-    "cwd": "/Users/chris/projects/api-server",
+    "session_id": "sess-beta-002",
+    "cwd": "/Users/chris/Nextcloud/crystl",
+    "tool_name": "Edit",
+    "tool_input": {"file_path": "Sources/Crystl/AppDelegate.swift"},
+    "tool_response": "Successfully edited AppDelegate.swift (3 lines changed)"
+  }' > /dev/null
+sleep "$DELAY"
+
+echo "→ SubagentStop: Agent finished"
+curl -sf -X POST "$BRIDGE/hook?type=SubagentStop" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "sess-alpha-001",
+    "cwd": "/Users/chris/projects/webapp",
+    "agent_id": "agent-explore-42",
+    "agent_type": "Explore",
+    "last_assistant_message": "Found 3 files matching the pattern: UserService.ts, AuthController.ts, and SessionManager.ts"
+  }' > /dev/null
+sleep "$DELAY"
+
+echo "→ TaskCompleted: Task done"
+curl -sf -X POST "$BRIDGE/hook?type=TaskCompleted" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "sess-alpha-001",
+    "cwd": "/Users/chris/projects/webapp",
+    "task_id": "task-17",
+    "task_subject": "Add rate limiting to /api/login endpoint",
+    "teammate_name": "backend-agent",
+    "team_name": "webapp-team"
+  }' > /dev/null
+sleep "$DELAY"
+
+echo "→ Notification: Idle prompt"
+curl -sf -X POST "$BRIDGE/hook?type=Notification" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "sess-beta-002",
+    "cwd": "/Users/chris/Nextcloud/crystl",
+    "title": "Waiting for input",
+    "message": "Claude is waiting for your response in the crystl project",
+    "notification_type": "idle_prompt"
+  }' > /dev/null
+sleep "$DELAY"
+
+echo "→ TeammateIdle: Agent idle"
+curl -sf -X POST "$BRIDGE/hook?type=TeammateIdle" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "sess-alpha-001",
+    "cwd": "/Users/chris/projects/webapp",
+    "teammate_name": "frontend-agent",
+    "team_name": "webapp-team"
+  }' > /dev/null
+sleep "$DELAY"
+
+echo "→ SessionEnd: Session ended"
+curl -sf -X POST "$BRIDGE/hook?type=SessionEnd" \
+  -H "Content-Type: application/json" \
+  -d '{
     "session_id": "sess-gamma-003",
-    "permission_mode": "default"
+    "cwd": "/Users/chris/projects/api-server",
+    "reason": "prompt_input_exit"
+  }' > /dev/null
+sleep "$DELAY"
+
+echo "→ Stop: Another session finished"
+curl -sf -X POST "$BRIDGE/hook?type=Stop" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "sess-beta-002",
+    "cwd": "/Users/chris/Nextcloud/crystl",
+    "last_assistant_message": "Done! The notification system is working. I added support for Stop, PostToolUse, SubagentStop, TaskCompleted, Notification, TeammateIdle, and SessionEnd hook types.",
+    "stop_hook_active": true
+  }' > /dev/null
+sleep "$DELAY"
+
+echo "→ Notification: Auth success"
+curl -sf -X POST "$BRIDGE/hook?type=Notification" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "sess-alpha-001",
+    "cwd": "/Users/chris/projects/webapp",
+    "title": "Authentication successful",
+    "message": "API key validated, resuming session",
+    "notification_type": "auth_success"
   }' > /dev/null
 
 echo ""
-echo "Done! 6 panels sent. They will timeout after 60s if not dismissed."
-echo "Click Allow/Deny to dismiss, or wait for expiry."
+echo "Done! 3 approval panels + 9 notifications sent."
+echo "Approval panels timeout after 60s. Notifications auto-dismiss after 8s."

@@ -13,11 +13,17 @@ const TIMEOUT_MS = 60000; // 60s before falling through to normal prompt
 // Pending approval requests: id -> { resolve, timer, data, created }
 const pendingRequests = new Map();
 
+// Fire-and-forget notifications (Stop, PostToolUse, etc.)
+const notifications = [];
+const MAX_NOTIFICATIONS = 100;
+const NOTIFICATION_EXPIRY_MS = 300000; // 5 min
+
 // Recent decisions for history display
 const recentDecisions = [];
 const MAX_HISTORY = 50;
 
 let requestCounter = 0;
+let notificationCounter = 0;
 let pollerConnected = false;
 let lastPollTime = 0;
 
@@ -56,7 +62,16 @@ const SETTINGS_PATH = path.join(__dirname, 'crystl-settings.json');
 const DEFAULT_SETTINGS = {
   autoApproveMode: 'manual', // 'manual' | 'smart' | 'all'
   paused: false,
-  sessionOverrides: {} // session_id -> 'manual' | 'smart' | 'all'
+  sessionOverrides: {}, // session_id -> 'manual' | 'smart' | 'all'
+  enabledNotifications: {
+    Stop: true,
+    PostToolUse: false,       // off by default (noisy)
+    SubagentStop: true,
+    TaskCompleted: true,
+    Notification: true,
+    TeammateIdle: true,
+    SessionEnd: true
+  }
 };
 
 // Tools considered safe for read-only operations
@@ -159,9 +174,16 @@ const server = http.createServer((req, res) => {
       });
     }
 
+    // Expire old notifications
+    const now = Date.now();
+    while (notifications.length > 0 && now - notifications[0].created > NOTIFICATION_EXPIRY_MS) {
+      notifications.shift();
+    }
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       pending,
+      notifications,
       sessions,
       history: recentDecisions.slice(0, MAX_HISTORY),
       settings
@@ -197,6 +219,30 @@ const server = http.createServer((req, res) => {
         } else {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Request not found or already resolved' }));
+        }
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON' }));
+      }
+    });
+    return;
+  }
+
+  // Dismiss a notification
+  if (req.method === 'POST' && req.url === '/dismiss-notification') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { id } = JSON.parse(body);
+        const idx = notifications.findIndex(n => n.id === id);
+        if (idx !== -1) {
+          notifications.splice(idx, 1);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        } else {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Notification not found' }));
         }
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -245,6 +291,12 @@ const server = http.createServer((req, res) => {
             changed = true;
           }
         }
+        if (update.enabledNotifications && typeof update.enabledNotifications === 'object') {
+          if (!settings.enabledNotifications) settings.enabledNotifications = { ...DEFAULT_SETTINGS.enabledNotifications };
+          Object.assign(settings.enabledNotifications, update.enabledNotifications);
+          changed = true;
+          log(`Notification settings updated: ${JSON.stringify(settings.enabledNotifications)}`);
+        }
 
         if (changed) {
           saveSettings(settings);
@@ -262,20 +314,66 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Claude Code PermissionRequest hook endpoint
-  if (req.method === 'POST' && req.url === '/hook') {
+  // Claude Code hook endpoint — handles all hook types
+  // PermissionRequest: hold connection until decision (existing behavior)
+  // All others: fire-and-forget, queue as notification for Crystl UI
+  if (req.method === 'POST' && req.url.startsWith('/hook')) {
+    const urlObj = new URL(req.url, 'http://localhost');
+    const hookType = urlObj.searchParams.get('type') || 'PermissionRequest';
+
     let body = '';
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
       try {
         const hookData = JSON.parse(body);
+        trackSession(hookData);
+
+        // ── Non-permission hooks: queue as notification, respond immediately ──
+        if (hookType !== 'PermissionRequest') {
+          const enabled = settings.enabledNotifications || DEFAULT_SETTINGS.enabledNotifications;
+          if (!enabled[hookType]) {
+            log(`Notification disabled, ignoring: ${hookType}`);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({}));
+            return;
+          }
+
+          const id = 'n' + String(++notificationCounter);
+          const notification = {
+            id,
+            type: hookType,
+            session_id: hookData.session_id || '',
+            cwd: hookData.cwd || '',
+            created: Date.now(),
+            // Type-specific fields
+            tool_name: hookData.tool_name || null,
+            tool_response: hookData.tool_response ? String(hookData.tool_response).slice(0, 200) : null,
+            message: hookData.last_assistant_message ? String(hookData.last_assistant_message).slice(0, 200) : (hookData.message || null),
+            title: hookData.title || null,
+            notification_type: hookData.notification_type || null,
+            agent_id: hookData.agent_id || null,
+            agent_type: hookData.agent_type || null,
+            task_subject: hookData.task_subject || null,
+            teammate_name: hookData.teammate_name || null,
+            team_name: hookData.team_name || null,
+            reason: hookData.reason || null,
+            error: hookData.error ? String(hookData.error).slice(0, 200) : null
+          };
+
+          notifications.push(notification);
+          if (notifications.length > MAX_NOTIFICATIONS) notifications.shift();
+
+          log(`Notification queued: ${hookType} (${id})${hookData.tool_name ? ' tool=' + hookData.tool_name : ''}`);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({}));
+          return;
+        }
+
+        // ── PermissionRequest: hold connection until Allow/Deny ──
         const id = String(++requestCounter);
         const toolName = hookData.tool_name || 'Unknown';
 
         log(`Permission request: ${toolName} (${id}) [mode: ${hookData.permission_mode || '?'}]`);
-
-        // Track session
-        trackSession(hookData);
 
         // Kill switch — fall through to normal terminal prompt
         if (settings.paused) {
