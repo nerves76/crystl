@@ -432,14 +432,37 @@ class PaddedTextField: NSTextField {
 class NewProjectPanel: NSObject {
     private var panel: NSPanel?
     private var nameField: NSTextField?
+    private var pathField: NSTextField?
     private var iconGrid: IconGridView?
     private var colorGrid: ColorGridView?
     private var mcpCheckboxes: [(name: String, checkbox: NSButton)] = []
     private var starterCheckboxes: [(id: UUID, checkbox: NSButton)] = []
-    var onSubmit: ((String, String?, String?, Set<String>, Set<UUID>) -> Void)?  // (name, iconName, colorHex, mcpServers, starterIds)
+    var onSubmit: ((String, String, String?, String?, Set<String>, Set<UUID>) -> Void)?  // (name, path, iconName, colorHex, mcpServers, starterIds)
     var onDismiss: (() -> Void)?
 
+    /// Computed panel height based on MCP/starter content.
+    var panelHeight: CGFloat {
+        let mcpServers = MCPConfigManager.shared.catalog.servers
+        let starters = StarterManager.shared.nonEmptyStarters()
+        let cbItemH: CGFloat = 24
+        let starterRows = (starters.count + 1) / 2
+        let mcpRows = (mcpServers.count + 1) / 2
+        let mcpHeaderH: CGFloat = mcpServers.isEmpty ? 0 : 24
+        let starterHeaderH: CGFloat = starters.isEmpty ? 0 : 24
+        let checkboxH = starterHeaderH + CGFloat(starterRows) * cbItemH +
+            mcpHeaderH + CGFloat(mcpRows) * cbItemH +
+            ((starterRows + mcpRows > 0) ? 8 : 0)
+        return 528 + checkboxH  // 460 + 68 for PATH field
+    }
+
     func show(relativeTo railPanel: NSPanel) {
+        let railFrame = railPanel.frame
+        let x = railFrame.maxX + 8
+        let y = railFrame.midY - (panelHeight / 2)
+        show(at: NSPoint(x: x, y: y))
+    }
+
+    func show(at origin: NSPoint) {
         dismiss()
 
         let mcpServers = MCPConfigManager.shared.catalog.servers.sorted(by: { $0.key < $1.key })
@@ -459,12 +482,10 @@ class NewProjectPanel: NSObject {
             ((starterRows + mcpRows > 0) ? 8 : 0)
 
         let panelWidth: CGFloat = 320
-        let panelHeight: CGFloat = 460 + checkboxSectionH
+        let panelHeight: CGFloat = 528 + checkboxSectionH
 
-        // Position to the right of the rail
-        let railFrame = railPanel.frame
-        let x = railFrame.maxX + 8
-        let y = railFrame.midY - (panelHeight / 2)
+        let x = origin.x
+        let y = origin.y
 
         let p = NSPanel(
             contentRect: NSRect(x: x, y: y, width: panelWidth, height: panelHeight),
@@ -544,6 +565,34 @@ class NewProjectPanel: NSObject {
         field.action = #selector(fieldSubmitted(_:))
         glass.addSubview(field)
         nameField = field
+        y0 -= fieldH + 16  // controlH + gap
+
+        // ── Path field ──
+        let pathLabel = NSTextField(labelWithString: "PATH")
+        pathLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+        pathLabel.textColor = NSColor(white: 1.0, alpha: 0.7)
+        pathLabel.frame = NSRect(x: sidePad, y: y0 - 14, width: contentW, height: 14)
+        glass.addSubview(pathLabel)
+        y0 -= 14 + 6
+
+        let defaultDir = UserDefaults.standard.string(forKey: "projectsDirectory")
+            ?? (NSHomeDirectory() + "/Projects")
+        let pathDisplay = (defaultDir as NSString).abbreviatingWithTildeInPath
+
+        let pField = PaddedTextField(frame: NSRect(x: sidePad, y: y0 - fieldH, width: contentW, height: fieldH))
+        pField.stringValue = pathDisplay
+        pField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        pField.textColor = NSColor(white: 1.0, alpha: 0.7)
+        pField.drawsBackground = false
+        pField.isBordered = false
+        pField.isBezeled = false
+        pField.focusRingType = .none
+        pField.wantsLayer = true
+        pField.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.12).cgColor
+        pField.layer?.cornerRadius = 8
+        pField.layer?.masksToBounds = true
+        glass.addSubview(pField)
+        pathField = pField
         y0 -= fieldH + 20  // controlH + sectionBreak
 
         // ── Color section ──
@@ -802,6 +851,16 @@ class NewProjectPanel: NSObject {
     private func submitProject() {
         let name = nameField?.stringValue.trimmingCharacters(in: .whitespaces) ?? ""
         guard !name.isEmpty else { return }
+
+        // Resolve path — expand ~ and use as parent directory
+        var parentDir = pathField?.stringValue.trimmingCharacters(in: .whitespaces) ?? ""
+        if parentDir.isEmpty {
+            parentDir = UserDefaults.standard.string(forKey: "projectsDirectory")
+                ?? (NSHomeDirectory() + "/Projects")
+        }
+        parentDir = (parentDir as NSString).expandingTildeInPath
+        let fullPath = parentDir + "/" + name
+
         let iconName = iconGrid?.selectedIcon
         let colorHex = colorGrid?.selectedColor.hexString
         var selectedMcps = Set<String>()
@@ -812,8 +871,24 @@ class NewProjectPanel: NSObject {
         for (id, cb) in starterCheckboxes {
             if cb.state == .on { selectedStarters.insert(id) }
         }
-        onSubmit?(name, iconName, colorHex, selectedMcps, selectedStarters)
+        onSubmit?(name, fullPath, iconName, colorHex, selectedMcps, selectedStarters)
         dismiss()
+    }
+
+    /// Pre-populates fields with existing project data.
+    func populate(name: String, path: String, iconName: String?, color: NSColor?) {
+        nameField?.stringValue = name
+        if let pathField = pathField {
+            let display = ((path as NSString).deletingLastPathComponent as NSString).abbreviatingWithTildeInPath
+            pathField.stringValue = display
+        }
+        if let icon = iconName { iconGrid?.selectIcon(icon) }
+        if let c = color {
+            colorGrid?.selectedColor = c
+            colorGrid?.needsDisplay = true
+            iconGrid?.selectedColor = c
+            iconGrid?.needsDisplay = true
+        }
     }
 
     func dismiss() {
@@ -905,7 +980,7 @@ class CrystalRailController {
     var onTileClicked: ((UUID) -> Void)?
     var onFolderDropped: ((String) -> Void)?
     var onAddClicked: (() -> Void)?
-    var onNewProject: ((String, String?, String?, Set<String>, Set<UUID>) -> Void)?  // (name, iconName, colorHex, mcpServers, starterIds)
+    var onNewProject: ((String, String, String?, String?, Set<String>, Set<UUID>) -> Void)?  // (name, path, iconName, colorHex, mcpServers, starterIds)
     var onChangeIcon: ((UUID) -> Void)?
     var onSettingsIconClicked: ((NSView) -> Void)?
     var newProjectPanel = NewProjectPanel()
@@ -1005,8 +1080,8 @@ class CrystalRailController {
         addBtn.onClick = { [weak self] in
             self?.showNewProjectPanel()
         }
-        newProjectPanel.onSubmit = { [weak self] name, iconName, colorHex, mcpServers, starterIds in
-            self?.onNewProject?(name, iconName, colorHex, mcpServers, starterIds)
+        newProjectPanel.onSubmit = { [weak self] name, path, iconName, colorHex, mcpServers, starterIds in
+            self?.onNewProject?(name, path, iconName, colorHex, mcpServers, starterIds)
         }
         glass.addSubview(addBtn)
         addButton = addBtn

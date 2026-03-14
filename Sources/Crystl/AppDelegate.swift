@@ -123,8 +123,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.terminalController.window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
-        r.onNewProject = { [weak self] name, iconName, colorHex, mcpServers, starterIds in
-            self?.createAndOpenProject(name: name, iconName: iconName, colorHex: colorHex,
+        r.onNewProject = { [weak self] name, path, iconName, colorHex, mcpServers, starterIds in
+            self?.createAndOpenProject(name: name, path: path, iconName: iconName, colorHex: colorHex,
                                        mcpServers: mcpServers, starterIds: starterIds)
         }
         r.onChangeIcon = { [weak self] tabId in
@@ -228,13 +228,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Creates a new project folder and opens it in a new tab.
-    func createAndOpenProject(name: String, iconName: String? = nil, colorHex: String? = nil,
+    func createAndOpenProject(name: String, path: String? = nil, iconName: String? = nil, colorHex: String? = nil,
                               mcpServers: Set<String> = [], starterIds: Set<UUID> = []) {
-        let projectPath = projectsDirectory + "/" + name
+        let projectPath = path ?? (projectsDirectory + "/" + name)
         let fm = FileManager.default
 
-        // Ensure projects directory exists
-        try? fm.createDirectory(atPath: projectsDirectory, withIntermediateDirectories: true)
+        // Ensure parent directory exists
+        let parentDir = (projectPath as NSString).deletingLastPathComponent
+        try? fm.createDirectory(atPath: parentDir, withIntermediateDirectories: true)
 
         // Create the project folder
         do {
@@ -1263,5 +1264,106 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             to: layer, bounds: contentView.bounds, cornerRadius: cornerRadius,
             delay: duration * 0.25
         )
+    }
+
+    // MARK: - Project Settings Panel
+
+    private var setupPanel: NewProjectPanel?
+
+    func showSetupPanel(for tc: TerminalWindowController) {
+        setupPanel?.dismiss()
+
+        let project = tc.selectedProject
+        let panel = NewProjectPanel()
+
+        panel.onSubmit = { [weak self, weak tc] name, projectPath, iconName, colorHex, mcpServers, starterIds in
+            guard let self = self, let tc = tc else { return }
+
+            let fm = FileManager.default
+
+            // Create project directory
+            let parentDir = (projectPath as NSString).deletingLastPathComponent
+            try? fm.createDirectory(atPath: parentDir, withIntermediateDirectories: true)
+            try? fm.createDirectory(atPath: projectPath, withIntermediateDirectories: true)
+
+            // Save project config
+            var config = ProjectConfig()
+            config.icon = iconName
+            config.color = colorHex
+            config.save(to: projectPath)
+
+            // Sync MCP and starters
+            if !mcpServers.isEmpty {
+                MCPConfigManager.shared.syncSelectedToProject(projectPath, serverNames: mcpServers)
+            }
+            if !starterIds.isEmpty {
+                StarterManager.shared.syncToProject(projectPath, starterIds: starterIds)
+            }
+
+            // Configure the current tab
+            let color = colorHex.flatMap { NSColor(hex: $0) }
+            tc.configureCurrentProject(name: name, path: projectPath, iconName: iconName, color: color)
+
+            self.setupPanel = nil
+        }
+
+        // Position relative to the terminal window
+        let winFrame = tc.window.frame
+        let panelW: CGFloat = 320
+        let panelH = panel.panelHeight
+        let x = winFrame.midX - panelW / 2
+        let y = winFrame.origin.y + 60
+        panel.show(at: NSPoint(x: x, y: y))
+
+        // Pre-populate with existing project data
+        if let project = project, !project.isUnconfigured {
+            panel.populate(
+                name: project.title,
+                path: project.directory,
+                iconName: project.iconName,
+                color: project.color
+            )
+        }
+
+        setupPanel = panel
+    }
+
+    // MARK: - Menu Actions
+
+    @objc func showSettings() {
+        if !terminalController.isShowingSettings {
+            terminalController.flipToSettings()
+        }
+        terminalController.window.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func newTab() {
+        terminalController.addProject()
+        terminalController.window.makeKeyAndOrderFront(nil)
+    }
+
+    @objc func closeTab() {
+        let tc = terminalController!
+        if tc.projects.count > 1 {
+            tc.closeProject(tc.selectedProjectIndex)
+        } else {
+            tc.window.performClose(nil)
+        }
+    }
+
+    @objc func selectNextTab() {
+        let tc = terminalController!
+        let next = (tc.selectedProjectIndex + 1) % tc.projects.count
+        tc.selectProject(next)
+    }
+
+    @objc func selectPreviousTab() {
+        let tc = terminalController!
+        let prev = (tc.selectedProjectIndex - 1 + tc.projects.count) % tc.projects.count
+        tc.selectProject(prev)
+    }
+
+    @objc func openHelp() {
+        NSWorkspace.shared.open(URL(string: "https://github.com/nerves76/crystl")!)
     }
 }

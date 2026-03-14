@@ -293,6 +293,7 @@ class ProjectTab {
     var selectedSessionIndex: Int = 0
     var color: NSColor
     var iconName: String?
+    var isUnconfigured: Bool = false
 
     var selectedSession: TerminalSession? {
         guard selectedSessionIndex >= 0 && selectedSessionIndex < sessions.count else { return nil }

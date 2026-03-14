@@ -42,6 +42,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
     private var opacityLabelTimer: Timer?
     private weak var glassView: NSVisualEffectView?
     private weak var backingView: NSView?
+    private var setupButton: NSButton?
 
     // Starter files — tracks which starter is being edited in settings
     var editingStarterId: UUID?
@@ -334,6 +335,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
 
     func addProject(cwd: String = NSHomeDirectory()) {
         let project = ProjectTab(directory: cwd, color: nextColor())
+        if cwd == NSHomeDirectory() { project.isUnconfigured = true }
         let session = project.addSession(frame: contentArea.bounds)
         session.terminalView.processDelegate = self
         projects.append(project)
@@ -353,6 +355,71 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
             session.start()
             self?.hideScroller(in: session.terminalView, sessionId: session.id)
         }
+    }
+
+    // MARK: - Project Settings Button
+
+    func updateSetupButton() {
+        if setupButton == nil {
+            let btn = NSButton(frame: .zero)
+            btn.bezelStyle = .rounded
+            btn.isBordered = false
+            btn.wantsLayer = true
+            btn.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.08).cgColor
+            btn.layer?.cornerRadius = 6
+            btn.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+            btn.contentTintColor = NSColor(white: 1.0, alpha: 0.5)
+            btn.target = self
+            btn.action = #selector(setupProjectClicked)
+            contentArea.addSubview(btn)
+            setupButton = btn
+        }
+
+        let isNew = selectedProject?.isUnconfigured == true
+        setupButton?.title = isNew ? "  +  Set Up Project" : "  ⚙  Project Settings"
+        let btnW: CGFloat = isNew ? 160 : 150
+        let btnH: CGFloat = 24
+        setupButton?.frame = NSRect(
+            x: contentArea.bounds.width - btnW - 8,
+            y: 8,
+            width: btnW, height: btnH
+        )
+    }
+
+    @objc func setupProjectClicked() {
+        guard let appDelegate = NSApp.delegate as? AppDelegate else { return }
+        appDelegate.showSetupPanel(for: self)
+    }
+
+    /// Configures the current tab with project settings (called from NewProjectPanel).
+    func configureCurrentProject(name: String, path: String, iconName: String?, color: NSColor?) {
+        guard let project = selectedProject else { return }
+
+        let wasUnconfigured = project.isUnconfigured
+        let oldPath = project.directory
+
+        project.directory = path
+        project.title = name
+        project.isUnconfigured = false
+        if let icon = iconName { project.iconName = icon }
+        if let c = color { project.color = c }
+
+        // cd into the new directory if it changed
+        if wasUnconfigured || path != oldPath {
+            if let session = project.selectedSession {
+                let escaped = shellEscape(path)
+                session.terminalView.send(txt: "cd \(escaped) && clear\n")
+                session.cwd = path
+            }
+        }
+
+        updateTabBar()
+        updateWindowTitle()
+        updateSetupButton()
+
+        // Notify rail of the update
+        let hex = color?.hexString ?? project.color.hexString
+        onTabUpdated?(project.id, name, hex)
     }
 
     // MARK: - Session Management
@@ -448,6 +515,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         updateSessionBar()
         updateWindowTitle()
         updateAgentUI()
+        updateSetupButton()
         onTabSelected?(project.id)
     }
 
