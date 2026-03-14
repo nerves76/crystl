@@ -106,6 +106,14 @@ class ColorGridView: NSView {
         }
     }
 
+    /// Programmatically select a color by index (for demo).
+    func selectIndex(_ index: Int) {
+        guard index >= 0 && index < presetColors.count else { return }
+        selectedColor = presetColors[index]
+        onColorChanged?(selectedColor)
+        needsDisplay = true
+    }
+
     private func colorsMatch(_ a: NSColor, _ b: NSColor) -> Bool {
         guard let a2 = a.usingColorSpace(.sRGB), let b2 = b.usingColorSpace(.sRGB) else { return false }
         return abs(a2.redComponent - b2.redComponent) < 0.02
@@ -215,6 +223,13 @@ class IconGridView: NSView {
                 return
             }
         }
+    }
+
+    /// Programmatically select an icon by name (for demo).
+    func selectIcon(_ name: String) {
+        selectedIcon = name
+        onIconSelected?(name)
+        needsDisplay = true
     }
 }
 

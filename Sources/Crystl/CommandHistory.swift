@@ -115,6 +115,13 @@ class ShellIntegration {
     add-zsh-hook preexec __crystl_preexec
     add-zsh-hook precmd __crystl_precmd
 
+    # Auto-run script if .crystl/autorun.sh exists (used by demo scripts)
+    if [[ -f "$PWD/.crystl/autorun.sh" ]]; then
+        local __crystl_autorun="$PWD/.crystl/autorun.sh"
+        (sleep 0.1 && rm -f "$__crystl_autorun") &
+        source "$__crystl_autorun"
+    fi
+
     """
 }
 

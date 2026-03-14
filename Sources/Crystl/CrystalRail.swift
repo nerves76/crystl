@@ -38,19 +38,43 @@ class RailTileView: NSView {
     var onClick: ((UUID) -> Void)?
     var onChangeIcon: ((UUID) -> Void)?
     private var shimmerLayer: CAGradientLayer?
+    private var hoverShimmerLayer: CAGradientLayer?
     private var isPulsing = false
     private var badgeLabel: NSTextField?
+    private var trackingArea: NSTrackingArea?
+
     init(tile: RailTile, frame: NSRect) {
         self.tile = tile
         super.init(frame: frame)
         wantsLayer = true
         layer?.cornerRadius = 10
+        layer?.masksToBounds = false
         setupBadge()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let ta = trackingArea { removeTrackingArea(ta) }
+        trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways],
+            owner: self, userInfo: nil
+        )
+        addTrackingArea(trackingArea!)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        guard !isPulsing else { return }  // Don't overlap with pending shimmer
+        startHoverShimmer()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        // Hover shimmer removes itself after sweep
+    }
 
     override func rightMouseDown(with event: NSEvent) {
         let menu = NSMenu()
@@ -71,8 +95,9 @@ class RailTileView: NSView {
         badge.alignment = .center
         badge.wantsLayer = true
         badge.layer?.cornerRadius = 7
-        badge.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.9).cgColor
-        badge.frame = NSRect(x: bounds.width - 16, y: bounds.height - 16, width: 14, height: 14)
+        badge.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(0.7).cgColor
+        // Position so badge breaches the top-right icon corner
+        badge.frame = NSRect(x: bounds.width - 12, y: bounds.height - 12, width: 14, height: 14)
         badge.isHidden = true
         addSubview(badge)
         badgeLabel = badge
@@ -221,6 +246,15 @@ class RailTileView: NSView {
         shimmerLayer = nil
     }
 
+    // MARK: - Hover Shimmer
+
+    private func startHoverShimmer() {
+        hoverShimmerLayer?.removeFromSuperlayer()
+        hoverShimmerLayer = nil
+        guard let layer = self.layer else { return }
+        addHoverShimmer(to: layer, bounds: bounds, cornerRadius: 10)
+    }
+
     private func projectInitial(_ title: String) -> String {
         let clean = title.trimmingCharacters(in: .whitespaces)
         guard !clean.isEmpty else { return "?" }
@@ -234,6 +268,7 @@ class RailTileView: NSView {
 class RailSettingsButton: NSButton {
     var onClick: (() -> Void)?
     private var trackingArea: NSTrackingArea?
+    private var isLocked = false  // Locked in hover state (e.g. menu open)
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -248,6 +283,30 @@ class RailSettingsButton: NSButton {
     }
 
     override func mouseEntered(with event: NSEvent) {
+        guard !isLocked else { return }
+        showGlow()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        guard !isLocked else { return }
+        hideGlow()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onClick?()
+    }
+
+    /// Locks the button in the hover/glow state.
+    func setLocked(_ locked: Bool) {
+        isLocked = locked
+        if locked {
+            showGlow()
+        } else {
+            hideGlow()
+        }
+    }
+
+    private func showGlow() {
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
             animator().alphaValue = 1.0
@@ -257,28 +316,24 @@ class RailSettingsButton: NSButton {
         layer?.shadowOffset = .zero
         layer?.shadowRadius = 8
         let anim = CABasicAnimation(keyPath: "shadowOpacity")
-        anim.fromValue = 0
+        anim.fromValue = layer?.presentation()?.shadowOpacity ?? 0
         anim.toValue = 0.6
         anim.duration = 0.15
         layer?.shadowOpacity = 0.6
         layer?.add(anim, forKey: "glowIn")
     }
 
-    override func mouseExited(with event: NSEvent) {
+    private func hideGlow() {
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.25
             animator().alphaValue = 0.7
         }
         let anim = CABasicAnimation(keyPath: "shadowOpacity")
-        anim.fromValue = 0.6
+        anim.fromValue = layer?.presentation()?.shadowOpacity ?? 0.6
         anim.toValue = 0
         anim.duration = 0.25
         layer?.shadowOpacity = 0
         layer?.add(anim, forKey: "glowOut")
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        onClick?()
     }
 }
 
@@ -336,6 +391,42 @@ class RailAddButton: NSView {
 
 // MARK: - New Project Panel
 
+// ── Padded Text Field ──
+
+/// NSTextField with horizontal padding and vertically centered text.
+class PaddedTextFieldCell: NSTextFieldCell {
+    let inset = NSSize(width: 8, height: 0)
+
+    private func adjustedRect(_ rect: NSRect) -> NSRect {
+        var r = rect
+        r.origin.x += inset.width
+        r.size.width -= inset.width * 2
+        // Vertically center
+        let usedH = cellSize(forBounds: r).height
+        let offset = max(0, (r.height - usedH) / 2)
+        r.origin.y += offset
+        r.size.height -= offset
+        return r
+    }
+
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        super.drawInterior(withFrame: adjustedRect(cellFrame), in: controlView)
+    }
+    override func edit(withFrame rect: NSRect, in controlView: NSView, editor: NSText, delegate: Any?, event: NSEvent?) {
+        super.edit(withFrame: adjustedRect(rect), in: controlView, editor: editor, delegate: delegate, event: event)
+    }
+    override func select(withFrame rect: NSRect, in controlView: NSView, editor: NSText, delegate: Any?, start selStart: Int, length selLength: Int) {
+        super.select(withFrame: adjustedRect(rect), in: controlView, editor: editor, delegate: delegate, start: selStart, length: selLength)
+    }
+}
+
+class PaddedTextField: NSTextField {
+    override class var cellClass: AnyClass? {
+        get { PaddedTextFieldCell.self }
+        set { super.cellClass = newValue }
+    }
+}
+
 /// A floating glass input panel for creating a new project folder.
 /// Includes name field, icon picker grid, and color picker.
 class NewProjectPanel: NSObject {
@@ -343,23 +434,32 @@ class NewProjectPanel: NSObject {
     private var nameField: NSTextField?
     private var iconGrid: IconGridView?
     private var colorGrid: ColorGridView?
-    private var includeMcp: NSButton?
-    private var includeClaudeMd: NSButton?
-    private var includeAgentsMd: NSButton?
-    var onSubmit: ((String, String?, String?, Bool, Bool, Bool) -> Void)?  // (name, iconName, colorHex, includeMcp, includeClaudeMd, includeAgentsMd)
+    private var mcpCheckboxes: [(name: String, checkbox: NSButton)] = []
+    private var starterCheckboxes: [(id: UUID, checkbox: NSButton)] = []
+    var onSubmit: ((String, String?, String?, Set<String>, Set<UUID>) -> Void)?  // (name, iconName, colorHex, mcpServers, starterIds)
     var onDismiss: (() -> Void)?
 
     func show(relativeTo railPanel: NSPanel) {
         dismiss()
 
-        let hasMcpDefaults = !MCPConfigManager.shared.catalog.servers.isEmpty
-        let hasClaudeMdTemplate = !DefaultClaudeMd.load().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasAgentsMdTemplate = !DefaultAgentsMd.load().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let checkboxCount = (hasMcpDefaults ? 1 : 0) + (hasClaudeMdTemplate ? 1 : 0) + (hasAgentsMdTemplate ? 1 : 0)
-        let checkboxHeight: CGFloat = checkboxCount > 0 ? CGFloat(checkboxCount) * 22 + 4 : 0
+        let mcpServers = MCPConfigManager.shared.catalog.servers.sorted(by: { $0.key < $1.key })
+        let starters = StarterManager.shared.nonEmptyStarters()
+
+        // Count rows: starters + MCP servers both use two-per-row layout
+        let cbItemH: CGFloat = 24
+        let starterRows = (starters.count + 1) / 2
+        let mcpRows = (mcpServers.count + 1) / 2
+        let hasMcpSection = !mcpServers.isEmpty
+        let hasStarterSection = !starters.isEmpty
+        let mcpHeaderH: CGFloat = hasMcpSection ? 14 + 10 : 0
+        let starterHeaderH: CGFloat = hasStarterSection ? 14 + 10 : 0
+        let checkboxSectionH: CGFloat =
+            starterHeaderH + CGFloat(starterRows) * cbItemH +
+            mcpHeaderH + CGFloat(mcpRows) * cbItemH +
+            ((starterRows + mcpRows > 0) ? 8 : 0)
 
         let panelWidth: CGFloat = 320
-        let panelHeight: CGFloat = 420 + checkboxHeight
+        let panelHeight: CGFloat = 460 + checkboxSectionH
 
         // Position to the right of the rail
         let railFrame = railPanel.frame
@@ -393,13 +493,18 @@ class NewProjectPanel: NSObject {
         glass.layer?.borderWidth = 0.5
         glass.layer?.borderColor = NSColor(white: 1.0, alpha: 0.3).cgColor
 
-        var y0 = panelHeight - 28
+        // ── Layout (top-down, non-flipped coordinates: y0 counts down from top) ──
+        let sidePad: CGFloat = 16
+        let contentW = panelWidth - sidePad * 2
+        var y0 = panelHeight - 20
 
-        // Label + close button
+        // Title + close button
+        let titleH: CGFloat = 18
+        y0 -= titleH
         let label = NSTextField(labelWithString: "New Project")
-        label.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        label.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
         label.textColor = .white
-        label.frame = NSRect(x: 16, y: y0, width: panelWidth - 56, height: 18)
+        label.frame = NSRect(x: sidePad, y: y0, width: contentW - 24, height: titleH)
         glass.addSubview(label)
 
         let closeBtn = NSButton(frame: NSRect(x: panelWidth - 32, y: y0, width: 18, height: 18))
@@ -410,141 +515,170 @@ class NewProjectPanel: NSObject {
         closeBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.5)
         closeBtn.target = self
         closeBtn.action = #selector(cancelClicked)
-        closeBtn.keyEquivalent = "\u{1b}"  // Escape key
+        closeBtn.keyEquivalent = "\u{1b}"
         glass.addSubview(closeBtn)
-        y0 -= 30
+        y0 -= 16  // sectionToHeader
 
-        // Name field
-        let field = NSTextField(frame: NSRect(x: 16, y: y0, width: panelWidth - 32, height: 24))
+        // ── Name field ──
+        let nameLabel = NSTextField(labelWithString: "NAME")
+        nameLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+        nameLabel.textColor = NSColor(white: 1.0, alpha: 0.7)
+        nameLabel.frame = NSRect(x: sidePad, y: y0 - 14, width: contentW, height: 14)
+        glass.addSubview(nameLabel)
+        y0 -= 14 + 6  // labelH + labelToControl gap
+
+        let fieldH: CGFloat = 28
+        let field = PaddedTextField(frame: NSRect(x: sidePad, y: y0 - fieldH, width: contentW, height: fieldH))
         field.placeholderString = "project-name"
         field.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         field.textColor = .white
-        field.backgroundColor = NSColor(white: 1.0, alpha: 0.08)
+        field.drawsBackground = false
         field.isBordered = false
         field.isBezeled = false
         field.focusRingType = .none
-        field.drawsBackground = true
         field.wantsLayer = true
-        field.layer?.cornerRadius = 6
+        field.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.12).cgColor
+        field.layer?.cornerRadius = 8
+        field.layer?.masksToBounds = true
         field.target = self
         field.action = #selector(fieldSubmitted(_:))
         glass.addSubview(field)
         nameField = field
-        y0 -= 28
+        y0 -= fieldH + 20  // controlH + sectionBreak
 
-        // Color section
+        // ── Color section ──
         let colorLabel = NSTextField(labelWithString: "COLOR")
-        colorLabel.font = NSFont.systemFont(ofSize: 9, weight: .medium)
-        colorLabel.textColor = NSColor(white: 1.0, alpha: 0.4)
-        colorLabel.frame = NSRect(x: 16, y: y0, width: panelWidth - 32, height: 12)
+        colorLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+        colorLabel.textColor = NSColor(white: 1.0, alpha: 0.7)
+        colorLabel.frame = NSRect(x: sidePad, y: y0 - 14, width: contentW, height: 14)
         glass.addSubview(colorLabel)
-        y0 -= 32
+        y0 -= 14 + 10  // labelH + gap
 
-        let cGrid = ColorGridView(frame: NSRect(x: 16, y: y0, width: panelWidth - 32, height: 28))
+        let cGrid = ColorGridView(frame: NSRect(x: sidePad, y: y0 - 28, width: contentW, height: 28))
         glass.addSubview(cGrid)
         colorGrid = cGrid
-        y0 -= 22
+        y0 -= 28 + 20  // controlH + sectionBreak
 
-        // Icon section
+        // ── Icon section ──
         let iconLabel = NSTextField(labelWithString: "ICON")
-        iconLabel.font = NSFont.systemFont(ofSize: 9, weight: .medium)
-        iconLabel.textColor = NSColor(white: 1.0, alpha: 0.4)
-        iconLabel.frame = NSRect(x: 16, y: y0, width: panelWidth - 32, height: 12)
+        iconLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+        iconLabel.textColor = NSColor(white: 1.0, alpha: 0.7)
+        iconLabel.frame = NSRect(x: sidePad, y: y0 - 14, width: contentW, height: 14)
         glass.addSubview(iconLabel)
-        y0 -= 6
+        y0 -= 14 + 6
 
         // Search field for icons
-        let searchField = NSTextField(frame: NSRect(x: 16, y: y0 - 20, width: panelWidth - 32, height: 20))
+        let searchField = PaddedTextField(frame: NSRect(x: sidePad, y: y0 - fieldH, width: contentW, height: fieldH))
         searchField.placeholderString = "Search icons..."
-        searchField.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        searchField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         searchField.textColor = .white
-        searchField.backgroundColor = NSColor(white: 1.0, alpha: 0.06)
+        searchField.drawsBackground = false
         searchField.isBordered = false
         searchField.isBezeled = false
         searchField.focusRingType = .none
-        searchField.drawsBackground = true
         searchField.wantsLayer = true
-        searchField.layer?.cornerRadius = 4
+        searchField.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.12).cgColor
+        searchField.layer?.cornerRadius = 8
+        searchField.layer?.masksToBounds = true
         glass.addSubview(searchField)
-        y0 -= 26
+        y0 -= fieldH + 10  // extra gap before icon grid
 
-        // Bottom area height: checkboxes + create button + padding
-        let bottomH: CGFloat = 48 + checkboxHeight
+        // Bottom area: checkboxes section + create button + padding
+        let btnH: CGFloat = 32
+        let bottomPad: CGFloat = 14
+        let bottomH: CGFloat = bottomPad + btnH + 8 + checkboxSectionH
 
-        // Icon grid (scrollable)
-        let gridHeight = y0 - bottomH
-        let scrollView = NSScrollView(frame: NSRect(x: 16, y: bottomH, width: panelWidth - 32, height: gridHeight))
+        // Icon grid (scrollable) fills remaining space
+        let gridTop = y0
+        let gridBottom = bottomH
+        let gridHeight = gridTop - gridBottom
+        let scrollView = NSScrollView(frame: NSRect(x: sidePad, y: gridBottom, width: contentW, height: max(gridHeight, 60)))
         scrollView.hasVerticalScroller = true
         scrollView.drawsBackground = false
         scrollView.borderType = .noBorder
         scrollView.autohidesScrollers = true
 
-        let iGrid = IconGridView(frame: NSRect(x: 0, y: 0, width: panelWidth - 32, height: gridHeight), containerWidth: panelWidth - 32)
+        let iGrid = IconGridView(frame: NSRect(x: 0, y: 0, width: contentW, height: max(gridHeight, 60)), containerWidth: contentW)
         iGrid.selectedColor = cGrid.selectedColor
         scrollView.documentView = iGrid
         glass.addSubview(scrollView)
         iconGrid = iGrid
 
-        // Wire color changes to icon grid
         cGrid.onColorChanged = { [weak iGrid] color in
             iGrid?.selectedColor = color
             iGrid?.needsDisplay = true
         }
-
-        // Wire search to icon grid
         searchField.target = self
         searchField.action = #selector(searchChanged(_:))
 
-        // ── Default include checkboxes (above create button) ──
-        var cbY: CGFloat = 44
+        // ── Defaults section (checkboxes above create button) ──
+        mcpCheckboxes.removeAll()
+        starterCheckboxes.removeAll()
+        var cbY: CGFloat = bottomPad + btnH + 8
+        let colW = (contentW - 4) / 2  // two columns with 4px gap
 
-        if hasAgentsMdTemplate {
-            let cb = NSButton(checkboxWithTitle: "Include default AGENTS.md", target: nil, action: nil)
-            cb.state = .on
-            cb.attributedTitle = NSAttributedString(string: "Include default AGENTS.md", attributes: [
-                .foregroundColor: NSColor.white,
-                .font: NSFont.systemFont(ofSize: 10)
-            ])
-            cb.frame = NSRect(x: 16, y: cbY, width: panelWidth - 32, height: 18)
-            glass.addSubview(cb)
-            includeAgentsMd = cb
-            cbY += 22
+        // MCP server checkboxes (two-column layout)
+        if hasMcpSection {
+            let sorted = mcpServers.reversed() as Array
+            for i in stride(from: 0, to: sorted.count, by: 2) {
+                if i + 1 < sorted.count {
+                    let (name, server) = sorted[i + 1]
+                    let cb = makeCheckbox(name, checked: server.enabledByDefault, width: colW)
+                    cb.frame = NSRect(x: sidePad + colW + 4, y: cbY, width: colW, height: cbItemH - 4)
+                    glass.addSubview(cb)
+                    mcpCheckboxes.append((name: name, checkbox: cb))
+                }
+                let (name, server) = sorted[i]
+                let cb = makeCheckbox(name, checked: server.enabledByDefault, width: colW)
+                cb.frame = NSRect(x: sidePad, y: cbY, width: colW, height: cbItemH - 4)
+                glass.addSubview(cb)
+                mcpCheckboxes.append((name: name, checkbox: cb))
+                cbY += cbItemH
+            }
+
+            let mcpHeader = NSTextField(labelWithString: "INCLUDE MCP?")
+            mcpHeader.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+            mcpHeader.textColor = NSColor(white: 1.0, alpha: 0.7)
+            mcpHeader.frame = NSRect(x: sidePad, y: cbY + 2, width: contentW, height: 14)
+            glass.addSubview(mcpHeader)
+            cbY += 14 + 10
         }
 
-        if hasClaudeMdTemplate {
-            let cb = NSButton(checkboxWithTitle: "Include default CLAUDE.md", target: nil, action: nil)
-            cb.state = .on
-            cb.attributedTitle = NSAttributedString(string: "Include default CLAUDE.md", attributes: [
-                .foregroundColor: NSColor.white,
-                .font: NSFont.systemFont(ofSize: 10)
-            ])
-            cb.frame = NSRect(x: 16, y: cbY, width: panelWidth - 32, height: 18)
-            glass.addSubview(cb)
-            includeClaudeMd = cb
-            cbY += 22
+        // Starter file checkboxes (two-column layout)
+        if hasStarterSection {
+            let sorted = Array(starters.reversed())
+            for i in stride(from: 0, to: sorted.count, by: 2) {
+                if i + 1 < sorted.count {
+                    let s = sorted[i + 1]
+                    let cb = makeCheckbox(s.name, checked: s.enabledByDefault, width: colW)
+                    cb.frame = NSRect(x: sidePad + colW + 4, y: cbY, width: colW, height: cbItemH - 4)
+                    glass.addSubview(cb)
+                    starterCheckboxes.append((id: s.id, checkbox: cb))
+                }
+                let s = sorted[i]
+                let cb = makeCheckbox(s.name, checked: s.enabledByDefault, width: colW)
+                cb.frame = NSRect(x: sidePad, y: cbY, width: colW, height: cbItemH - 4)
+                glass.addSubview(cb)
+                starterCheckboxes.append((id: s.id, checkbox: cb))
+                cbY += cbItemH
+            }
+
+            let starterHeader = NSTextField(labelWithString: "INCLUDE FILES?")
+            starterHeader.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+            starterHeader.textColor = NSColor(white: 1.0, alpha: 0.7)
+            starterHeader.frame = NSRect(x: sidePad, y: cbY + 2, width: contentW, height: 14)
+            glass.addSubview(starterHeader)
+            cbY += 14 + 10
         }
 
-        if hasMcpDefaults {
-            let cb = NSButton(checkboxWithTitle: "Include default MCP servers", target: nil, action: nil)
-            cb.state = .on
-            cb.attributedTitle = NSAttributedString(string: "Include default MCP servers", attributes: [
-                .foregroundColor: NSColor.white,
-                .font: NSFont.systemFont(ofSize: 10)
-            ])
-            cb.frame = NSRect(x: 16, y: cbY, width: panelWidth - 32, height: 18)
-            glass.addSubview(cb)
-            includeMcp = cb
-            cbY += 22
-        }
-
-        // Create button
-        let createBtn = NSButton(frame: NSRect(x: 16, y: 12, width: panelWidth - 32, height: 28))
+        // ── Create button ──
+        let createBtn = NSButton(frame: NSRect(x: sidePad, y: bottomPad, width: contentW, height: btnH))
         createBtn.title = "Create Project"
         createBtn.bezelStyle = .rounded
         createBtn.isBordered = false
         createBtn.wantsLayer = true
         createBtn.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.3).cgColor
-        createBtn.layer?.cornerRadius = 6
+        createBtn.layer?.cornerRadius = 8
         createBtn.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         createBtn.contentTintColor = NSColor.systemGreen
         createBtn.target = self
@@ -557,6 +691,62 @@ class NewProjectPanel: NSObject {
         p.makeFirstResponder(field)
 
         panel = p
+        animateIn(p, cornerRadius: 12)
+    }
+
+    private func animateIn(_ panel: NSPanel, cornerRadius: CGFloat) {
+        guard let contentView = panel.contentView else { return }
+        contentView.wantsLayer = true
+        guard let layer = contentView.layer else { return }
+
+        panel.hasShadow = false
+        let duration: CFTimeInterval = 0.5
+        let fluidTiming = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
+
+        layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        layer.position = CGPoint(x: contentView.bounds.midX, y: contentView.bounds.midY)
+
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = 0.0
+        scale.toValue = 1.0
+        scale.duration = duration
+        scale.timingFunction = fluidTiming
+
+        let opacity = CABasicAnimation(keyPath: "opacity")
+        opacity.fromValue = 0.0
+        opacity.toValue = 1.0
+        opacity.duration = duration * 0.4
+        opacity.timingFunction = CAMediaTimingFunction(name: .easeIn)
+
+        let borderColor = CABasicAnimation(keyPath: "borderColor")
+        borderColor.fromValue = NSColor(white: 1.0, alpha: 1.0).cgColor
+        borderColor.toValue = NSColor(white: 1.0, alpha: 0.3).cgColor
+        borderColor.duration = duration * 1.2
+        borderColor.timingFunction = CAMediaTimingFunction(name: .easeOut)
+
+        let borderWidth = CABasicAnimation(keyPath: "borderWidth")
+        borderWidth.fromValue = 2.0
+        borderWidth.toValue = 0.5
+        borderWidth.duration = duration * 1.2
+        borderWidth.timingFunction = CAMediaTimingFunction(name: .easeOut)
+
+        layer.transform = CATransform3DIdentity
+        layer.cornerRadius = cornerRadius
+        layer.opacity = 1.0
+        layer.borderWidth = 0.5
+        layer.borderColor = NSColor(white: 1.0, alpha: 0.3).cgColor
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak panel] in
+            panel?.hasShadow = true
+        }
+        layer.add(scale, forKey: "crystalScale")
+        layer.add(opacity, forKey: "crystalOpacity")
+        layer.add(borderColor, forKey: "crystalBorderColor")
+        layer.add(borderWidth, forKey: "crystalBorderWidth")
+        CATransaction.commit()
+
+        addShimmerSweep(to: layer, bounds: contentView.bounds, cornerRadius: cornerRadius, delay: duration * 0.25)
     }
 
     @objc private func fieldSubmitted(_ sender: NSTextField) {
@@ -576,21 +766,62 @@ class NewProjectPanel: NSObject {
         iconGrid?.filterText = sender.stringValue
     }
 
+    private func makeCheckbox(_ title: String, checked: Bool, width: CGFloat) -> NSButton {
+        let cb = NSButton(checkboxWithTitle: title, target: nil, action: nil)
+        cb.state = checked ? .on : .off
+        // Truncate title with attributed string
+        let para = NSMutableParagraphStyle()
+        para.lineBreakMode = .byTruncatingTail
+        cb.attributedTitle = NSAttributedString(string: title, attributes: [
+            .foregroundColor: NSColor.white,
+            .font: NSFont.systemFont(ofSize: 11),
+            .paragraphStyle: para
+        ])
+        return cb
+    }
+
+    /// Sets the name field text (for demo).
+    func setName(_ text: String) {
+        nameField?.stringValue = text
+    }
+
+    /// Selects a color by index (for demo).
+    func selectColor(_ index: Int) {
+        colorGrid?.selectIndex(index)
+        if let color = colorGrid?.selectedColor {
+            iconGrid?.selectedColor = color
+            iconGrid?.needsDisplay = true
+        }
+    }
+
+    /// Selects an icon by name (for demo).
+    func selectIcon(_ name: String) {
+        iconGrid?.selectIcon(name)
+    }
+
     private func submitProject() {
         let name = nameField?.stringValue.trimmingCharacters(in: .whitespaces) ?? ""
         guard !name.isEmpty else { return }
         let iconName = iconGrid?.selectedIcon
         let colorHex = colorGrid?.selectedColor.hexString
-        let wantMcp = includeMcp?.state == .on
-        let wantClaudeMd = includeClaudeMd?.state == .on
-        let wantAgentsMd = includeAgentsMd?.state == .on
-        onSubmit?(name, iconName, colorHex, wantMcp, wantClaudeMd, wantAgentsMd)
+        var selectedMcps = Set<String>()
+        for (serverName, cb) in mcpCheckboxes {
+            if cb.state == .on { selectedMcps.insert(serverName) }
+        }
+        var selectedStarters = Set<UUID>()
+        for (id, cb) in starterCheckboxes {
+            if cb.state == .on { selectedStarters.insert(id) }
+        }
+        onSubmit?(name, iconName, colorHex, selectedMcps, selectedStarters)
         dismiss()
     }
 
     func dismiss() {
+        guard let p = panel else { return }
+        panel = nil
+
         // Break retain cycles from field targets
-        if let contentView = panel?.contentView {
+        if let contentView = p.contentView {
             for subview in contentView.subviews {
                 if let field = subview as? NSTextField, field.target === self {
                     field.target = nil
@@ -604,11 +835,10 @@ class NewProjectPanel: NSObject {
                 }
             }
         }
-        includeMcp = nil
-        includeClaudeMd = nil
-        includeAgentsMd = nil
-        panel?.close()
-        panel = nil
+        mcpCheckboxes.removeAll()
+        starterCheckboxes.removeAll()
+
+        animatePanelOut(p) {}
     }
 }
 
@@ -675,10 +905,10 @@ class CrystalRailController {
     var onTileClicked: ((UUID) -> Void)?
     var onFolderDropped: ((String) -> Void)?
     var onAddClicked: (() -> Void)?
-    var onNewProject: ((String, String?, String?, Bool, Bool, Bool) -> Void)?  // (name, iconName, colorHex, includeMcp, includeClaudeMd, includeAgentsMd)
+    var onNewProject: ((String, String?, String?, Set<String>, Set<UUID>) -> Void)?  // (name, iconName, colorHex, mcpServers, starterIds)
     var onChangeIcon: ((UUID) -> Void)?
     var onSettingsIconClicked: ((NSView) -> Void)?
-    private var newProjectPanel = NewProjectPanel()
+    var newProjectPanel = NewProjectPanel()
     private weak var glassView: NSVisualEffectView?
 
     private let railWidth: CGFloat = 52
@@ -690,7 +920,7 @@ class CrystalRailController {
     private let sectionSpacing: CGFloat = 10 // space between icon/tiles/button
     private let railMargin: CGFloat = 6
     private var contentView: NSView!
-    private var iconView: NSView?
+    var iconView: NSView?
     private var addButton: NSView?
 
     func setup() {
@@ -720,13 +950,14 @@ class CrystalRailController {
         panel.isOpaque = false
         panel.hasShadow = true
 
-        // Glass background — match window opacity
+        // Glass background — match window opacity using two-phase mapping
         let savedOpacity = UserDefaults.standard.double(forKey: "windowOpacity")
-        let resolvedOpacity: CGFloat = savedOpacity > 0.01 ? CGFloat(savedOpacity) : 0.85
-        panel.backgroundColor = NSColor(white: 0.1, alpha: resolvedOpacity)
+        let sliderVal: CGFloat = savedOpacity > 0.01 ? CGFloat(savedOpacity) : 0.5
+        let opacity = opacityFromSlider(sliderVal)
+        panel.backgroundColor = .clear
         let glass = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: railWidth, height: initialHeight))
         glass.material = .hudWindow
-        glass.alphaValue = resolvedOpacity
+        glass.alphaValue = opacity.glassAlpha
         glass.blendingMode = .behindWindow
         glass.state = .active
         glass.autoresizingMask = [.width, .height]
@@ -735,6 +966,14 @@ class CrystalRailController {
         glass.wantsLayer = true
         glass.layer?.borderWidth = 0.5
         glass.layer?.borderColor = NSColor(white: 1.0, alpha: 0.3).cgColor
+
+        // Charcoal overlay inside glass (above blur, below content)
+        let backing = CharcoalBackingView(frame: NSRect(x: 0, y: 0, width: railWidth, height: initialHeight))
+        backing.wantsLayer = true
+        backing.layer?.backgroundColor = darkCharcoalColor.cgColor
+        backing.autoresizingMask = [.width, .height]
+        backing.alphaValue = opacity.darkAlpha
+        glass.addSubview(backing)
 
         // Drop target
         let dropView = RailDropView(frame: glass.bounds)
@@ -766,8 +1005,8 @@ class CrystalRailController {
         addBtn.onClick = { [weak self] in
             self?.showNewProjectPanel()
         }
-        newProjectPanel.onSubmit = { [weak self] name, iconName, colorHex, includeMcp, includeClaudeMd, includeAgentsMd in
-            self?.onNewProject?(name, iconName, colorHex, includeMcp, includeClaudeMd, includeAgentsMd)
+        newProjectPanel.onSubmit = { [weak self] name, iconName, colorHex, mcpServers, starterIds in
+            self?.onNewProject?(name, iconName, colorHex, mcpServers, starterIds)
         }
         glass.addSubview(addBtn)
         addButton = addBtn
@@ -782,9 +1021,12 @@ class CrystalRailController {
 
     // MARK: - Opacity
 
-    func setOpacity(_ alpha: CGFloat) {
-        glassView?.alphaValue = alpha
-        panel?.backgroundColor = NSColor(white: 0.1, alpha: alpha)
+    func setOpacity(_ sliderVal: CGFloat) {
+        let opacity = opacityFromSlider(sliderVal)
+        glassView?.alphaValue = opacity.glassAlpha
+        if let glass = glassView, let backing = findCharcoalBacking(in: glass) {
+            backing.alphaValue = opacity.darkAlpha
+        }
     }
 
     // MARK: - New Project
@@ -831,6 +1073,22 @@ class CrystalRailController {
             self.tiles.removeAll { $0.tabId == tabId }
             self.layoutTiles()
         })
+    }
+
+    func removeAllTiles() {
+        for (_, view) in tileViews {
+            view.removeFromSuperview()
+        }
+        tileViews.removeAll()
+        tiles.removeAll()
+    }
+
+    func animateOpen() {
+        animateRailOpen()
+        // Re-animate existing tiles
+        for (_, view) in tileViews {
+            animateTileIn(view)
+        }
     }
 
     func selectTile(tabId: UUID) {

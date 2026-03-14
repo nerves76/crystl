@@ -38,7 +38,13 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
     private var directoryPicker: DirectoryPicker?
     private var settingsButton: NSButton?
     private var opacitySlider: NSSlider?
+    private var opacityLabel: NSTextField?
+    private var opacityLabelTimer: Timer?
     private weak var glassView: NSVisualEffectView?
+    private weak var backingView: NSView?
+
+    // Starter files — tracks which starter is being edited in settings
+    var editingStarterId: UUID?
 
     // Agent detection — mode UI shown when an agent is running
     private var agentMonitor: AgentMonitor?
@@ -95,16 +101,28 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         container.autoresizingMask = [.width, .height]
         window.contentView = container
 
+        let savedOpacity = UserDefaults.standard.double(forKey: "windowOpacity")
+        let opacityVal = savedOpacity > 0.01 ? savedOpacity : 0.5
+
         let glass = NSVisualEffectView(frame: container.bounds)
         glass.material = .hudWindow
-        let savedOpacity = UserDefaults.standard.double(forKey: "windowOpacity")
-        glass.alphaValue = savedOpacity > 0.01 ? CGFloat(savedOpacity) : 0.85
         glass.blendingMode = .behindWindow
         glass.state = .active
         glass.autoresizingMask = [.width, .height]
         glass.appearance = NSAppearance(named: .darkAqua)
         container.addSubview(glass)
         self.glassView = glass
+
+        // Charcoal overlay above glass, below content — only kicks in past halfway
+        let backing = CharcoalBackingView(frame: container.bounds)
+        backing.wantsLayer = true
+        backing.layer?.backgroundColor = darkCharcoalColor.cgColor
+        backing.autoresizingMask = [.width, .height]
+        container.addSubview(backing)
+        self.backingView = backing
+
+        // Apply initial values
+        applyOpacity(opacityVal)
 
         // Tab bar
         let tabBarY = windowHeight - tabBarHeight - titleBarHeight
@@ -159,9 +177,9 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
             width: sliderWidth, height: 16
         ))
         slider.cell = GraySliderCell()
-        slider.minValue = 0.3
+        slider.minValue = 0.0
         slider.maxValue = 1.0
-        slider.doubleValue = Double(savedOpacity > 0.01 ? savedOpacity : 0.85)
+        slider.doubleValue = savedOpacity > 0.01 ? savedOpacity : 0.5
         slider.controlSize = .mini
         slider.isContinuous = true
         slider.target = self
@@ -170,6 +188,17 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         slider.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
         container.addSubview(slider)
         opacitySlider = slider
+
+        // Percentage label (hidden until slider dragged)
+        let pctLabel = NSTextField(labelWithString: "")
+        pctLabel.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .medium)
+        pctLabel.textColor = NSColor(white: 1.0, alpha: 0.7)
+        pctLabel.alignment = .center
+        pctLabel.frame = NSRect(x: (windowWidth - 40) / 2, y: windowHeight - 50, width: 40, height: 14)
+        pctLabel.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin]
+        pctLabel.alphaValue = 0
+        container.addSubview(pctLabel)
+        opacityLabel = pctLabel
 
         // Status bar
         let statusBar = NSView(frame: NSRect(x: 0, y: 0, width: windowWidth, height: statusBarHeight))
@@ -624,11 +653,43 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         if isShowingSettings { flipToTerminal() } else { flipToSettings() }
     }
 
+    private func applyOpacity(_ val: Double) {
+        let opacity = opacityFromSlider(CGFloat(val))
+        glassView?.alphaValue = opacity.glassAlpha
+        backingView?.alphaValue = opacity.darkAlpha
+    }
+
     @objc private func opacitySliderChanged(_ sender: NSSlider) {
-        let val = CGFloat(sender.doubleValue)
-        glassView?.alphaValue = val
-        UserDefaults.standard.set(sender.doubleValue, forKey: "windowOpacity")
-        onOpacityChanged?(val)
+        let val = sender.doubleValue
+        applyOpacity(val)
+        UserDefaults.standard.set(val, forKey: "windowOpacity")
+        onOpacityChanged?(CGFloat(val))
+
+        // Show percentage label
+        let pct = Int(round(val * 100))
+        opacityLabel?.stringValue = "\(pct)%"
+        opacityLabelTimer?.invalidate()
+        if opacityLabel?.alphaValue == 0 {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.1
+                opacityLabel?.animator().alphaValue = 1
+            }
+        }
+        // Fade out after dragging stops
+        opacityLabelTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: false) { [weak self] _ in
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.3
+                self?.opacityLabel?.animator().alphaValue = 0
+            }
+        }
+    }
+
+    /// Programmatically set opacity slider value and apply to all elements.
+    func setOpacity(_ val: Double) {
+        opacitySlider?.doubleValue = val
+        applyOpacity(val)
+        UserDefaults.standard.set(val, forKey: "windowOpacity")
+        onOpacityChanged?(CGFloat(val))
     }
 
     // Accessors for rail menu
@@ -665,6 +726,52 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
             currentClaudeMode = cm
             claudeModePopup.selectItem(withTitle: cm)
         }
+    }
+
+    // MARK: - Window Close Animation
+
+    private var isAnimatingClose = false
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if isAnimatingClose { return true }
+        guard let contentView = sender.contentView else { return true }
+        contentView.wantsLayer = true
+        guard let layer = contentView.layer else { return true }
+
+        isAnimatingClose = true
+        sender.hasShadow = false
+
+        let duration: CFTimeInterval = 0.25
+        let timing = CAMediaTimingFunction(controlPoints: 0.4, 0.0, 1.0, 1.0)
+
+        layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        layer.position = CGPoint(x: contentView.bounds.midX, y: contentView.bounds.midY)
+
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        scale.fromValue = 1.0
+        scale.toValue = 0.85
+        scale.duration = duration
+        scale.timingFunction = timing
+        scale.fillMode = .forwards
+        scale.isRemovedOnCompletion = false
+
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1.0
+        fade.toValue = 0.0
+        fade.duration = duration
+        fade.timingFunction = timing
+        fade.fillMode = .forwards
+        fade.isRemovedOnCompletion = false
+
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak sender] in
+            sender?.close()
+        }
+        layer.add(scale, forKey: "closeScale")
+        layer.add(fade, forKey: "closeFade")
+        CATransaction.commit()
+
+        return false
     }
 
     // MARK: - LocalProcessTerminalViewDelegate

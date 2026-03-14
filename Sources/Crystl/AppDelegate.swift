@@ -30,6 +30,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var notificationPanels: [String: NSPanel] = [:]
     var knownNotificationIds: Set<String> = []
     var notificationDismissTimers: [String: Timer] = [:]
+    var dismissAllNotificationsPanel: NSPanel?
 
     var knownIds: Set<String> = []            // Currently displayed request IDs
     var pendingIds: [String] = []             // Ordered list for Allow All
@@ -44,7 +45,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var pendingFolders: [String] = []
     var currentOpacity: CGFloat = {
         let saved = UserDefaults.standard.double(forKey: "windowOpacity")
-        return saved > 0.01 ? CGFloat(saved) : 0.85
+        return saved > 0.01 ? CGFloat(saved) : 0.5
     }()
 
     /// Shared secret token for authenticating with the bridge server.
@@ -96,20 +97,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         terminalController.onTabUpdated = { [weak self] tabId, title, cwd in
             self?.rail?.updateTile(tabId: tabId, title: title, cwd: cwd)
         }
-        terminalController.onOpacityChanged = { [weak self] alpha in
+        terminalController.onOpacityChanged = { [weak self] sliderVal in
             guard let self = self else { return }
-            self.currentOpacity = alpha
-            self.rail?.setOpacity(alpha)
-            // Update any visible notification/approval panels
-            for (_, panel) in self.panels {
-                (panel.contentView as? NSVisualEffectView)?.alphaValue = alpha
-            }
-            if let panel = self.allowAllPanel {
-                (panel.contentView as? NSVisualEffectView)?.alphaValue = alpha
-            }
-            for panel in self.finishedPanels {
-                (panel.contentView as? NSVisualEffectView)?.alphaValue = alpha
-            }
+            self.currentOpacity = sliderVal
+            self.rail?.setOpacity(sliderVal)
+            self.applyPanelOpacity(sliderVal)
         }
         terminalController.setup()
 
@@ -131,10 +123,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.terminalController.window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
-        r.onNewProject = { [weak self] name, iconName, colorHex, includeMcp, includeClaudeMd, includeAgentsMd in
+        r.onNewProject = { [weak self] name, iconName, colorHex, mcpServers, starterIds in
             self?.createAndOpenProject(name: name, iconName: iconName, colorHex: colorHex,
-                                       includeMcp: includeMcp, includeClaudeMd: includeClaudeMd,
-                                       includeAgentsMd: includeAgentsMd)
+                                       mcpServers: mcpServers, starterIds: starterIds)
         }
         r.onChangeIcon = { [weak self] tabId in
             self?.showIconPicker(for: tabId)
@@ -152,6 +143,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             r.selectTile(tabId: firstProject.id)
         }
         rail = r
+
+        // Sync rail opacity with saved slider value
+        let savedOpacity = UserDefaults.standard.double(forKey: "windowOpacity")
+        let initialOpacity = savedOpacity > 0.01 ? savedOpacity : 0.5
+        r.setOpacity(CGFloat(initialOpacity))
 
         // Open any folders queued during launch
         for path in pendingFolders {
@@ -233,8 +229,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Creates a new project folder and opens it in a new tab.
     func createAndOpenProject(name: String, iconName: String? = nil, colorHex: String? = nil,
-                              includeMcp: Bool = true, includeClaudeMd: Bool = true,
-                              includeAgentsMd: Bool = true) {
+                              mcpServers: Set<String> = [], starterIds: Set<UUID> = []) {
         let projectPath = projectsDirectory + "/" + name
         let fm = FileManager.default
 
@@ -257,15 +252,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             config.save(to: projectPath)
         }
 
-        // Write defaults based on user's choice in new project panel
-        if includeMcp {
-            MCPConfigManager.shared.syncToProject(projectPath)
+        // Write defaults based on user's choices in new project panel
+        if !mcpServers.isEmpty {
+            MCPConfigManager.shared.syncSelectedToProject(projectPath, serverNames: mcpServers)
         }
-        if includeClaudeMd {
-            DefaultClaudeMd.syncToProject(projectPath)
-        }
-        if includeAgentsMd {
-            DefaultAgentsMd.syncToProject(projectPath)
+        if !starterIds.isEmpty {
+            StarterManager.shared.syncToProject(projectPath, starterIds: starterIds)
         }
 
         _ = openFolder(projectPath, skipDefaults: true)
@@ -303,22 +295,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         iconPickerPanel = picker
     }
 
-    private var approvalFlyout: NSPanel?
+    var approvalFlyout: NSPanel?
+    var flyoutModeItems: [String: FlyoutMenuItem] = [:]
 
     func showRailSettingsMenu(from view: NSView) {
         // Dismiss if already showing
-        if let existing = approvalFlyout {
-            existing.close()
-            approvalFlyout = nil
+        if approvalFlyout != nil {
+            closeFlyout()
             return
         }
 
+        // Only show if Claude integration is enabled in settings
+        let claudeEnabled = UserDefaults.standard.object(forKey: "agentEnabled:claude") as? Bool ?? true
+        guard claudeEnabled else { return }
+
         let tc = terminalController!
         let panelWidth: CGFloat = 140
-        let btnHeight: CGFloat = 28
+        let itemHeight: CGFloat = 24
+        let itemGap: CGFloat = 2
         let modes: [(String, String)] = [("Manual", "manual"), ("Smart", "smart"), ("Auto Approve", "all")]
-        let headerHeight: CGFloat = 28
-        let panelHeight: CGFloat = headerHeight + CGFloat(modes.count + 1) * btnHeight + 16  // +1 for Pause, padding
+        let topPad: CGFloat = 14
+        let headerLabelH: CGFloat = 14
+        let headerGap: CGFloat = 10
+        let bottomPad: CGFloat = 14
+        let itemCount = CGFloat(modes.count + 1)  // +1 for Pause All
+        let panelHeight: CGFloat = topPad + headerLabelH + headerGap + itemCount * itemHeight + (itemCount - 1) * itemGap + bottomPad
 
         // Position to the right of the rail icon
         let iconScreenFrame = view.window!.convertToScreen(view.convert(view.bounds, to: nil))
@@ -332,73 +333,68 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.contentView = glass
 
         // Header
-        let header = NSTextField(labelWithString: "APPROVAL MODE")
-        header.font = NSFont.systemFont(ofSize: 9, weight: .bold)
+        let header = NSTextField(labelWithString: "CLAUDE APPROVAL")
+        header.font = NSFont.systemFont(ofSize: 10, weight: .bold)
         header.textColor = NSColor(white: 1.0, alpha: 0.5)
         header.alignment = .center
-        header.frame = NSRect(x: 0, y: panelHeight - headerHeight, width: panelWidth, height: 14)
+        header.frame = NSRect(x: 0, y: panelHeight - topPad - headerLabelH, width: panelWidth, height: headerLabelH)
         glass.addSubview(header)
 
-        var btnY = panelHeight - headerHeight - btnHeight
+        flyoutModeItems.removeAll()
+        var itemY = panelHeight - topPad - headerLabelH - headerGap - itemHeight
         for (label, mode) in modes {
             let isActive = mode == tc.currentModeValue
-            let btn = NSButton(frame: NSRect(x: 8, y: btnY, width: panelWidth - 16, height: btnHeight))
-            btn.title = label
-            btn.bezelStyle = .rounded
-            btn.isBordered = false
-            btn.wantsLayer = true
-            btn.layer?.cornerRadius = 6
-            btn.layer?.backgroundColor = isActive
-                ? NSColor(white: 1.0, alpha: 0.15).cgColor
-                : NSColor.clear.cgColor
-            btn.font = NSFont.systemFont(ofSize: 12, weight: isActive ? .semibold : .regular)
-            btn.contentTintColor = isActive ? .white : NSColor(white: 1.0, alpha: 0.6)
-            btn.target = self
-            btn.action = #selector(railMenuModeSelected(_:))
-            btn.identifier = NSUserInterfaceItemIdentifier(mode)
-            glass.addSubview(btn)
-            btnY -= btnHeight
+            let item = FlyoutMenuItem(
+                frame: NSRect(x: 8, y: itemY, width: panelWidth - 16, height: itemHeight),
+                title: label, isActive: isActive
+            )
+            item.onClick = { [weak self] in
+                self?.terminalController.setMode(mode)
+                self?.closeFlyout()
+            }
+            glass.addSubview(item)
+            flyoutModeItems[mode] = item
+            itemY -= (itemHeight + itemGap)
         }
 
-        // Separator
-        let sep = NSView(frame: NSRect(x: 12, y: btnY + btnHeight - 2, width: panelWidth - 24, height: 0.5))
-        sep.wantsLayer = true
-        sep.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.1).cgColor
-        glass.addSubview(sep)
-
         // Pause button
-        let pauseBtn = NSButton(frame: NSRect(x: 8, y: btnY, width: panelWidth - 16, height: btnHeight))
-        pauseBtn.title = tc.isPausedValue ? "Resume" : "Pause"
-        pauseBtn.bezelStyle = .rounded
-        pauseBtn.isBordered = false
-        pauseBtn.wantsLayer = true
-        pauseBtn.layer?.cornerRadius = 6
-        pauseBtn.layer?.backgroundColor = tc.isPausedValue
-            ? NSColor.systemOrange.withAlphaComponent(0.2).cgColor
-            : NSColor.clear.cgColor
-        pauseBtn.font = NSFont.systemFont(ofSize: 12, weight: tc.isPausedValue ? .semibold : .regular)
-        pauseBtn.contentTintColor = tc.isPausedValue
-            ? NSColor.systemOrange
-            : NSColor(white: 1.0, alpha: 0.6)
-        pauseBtn.target = self
-        pauseBtn.action = #selector(railMenuPauseToggled)
-        glass.addSubview(pauseBtn)
+        let isPaused = tc.isPausedValue
+        let pauseItem = FlyoutMenuItem(
+            frame: NSRect(x: 8, y: itemY, width: panelWidth - 16, height: itemHeight),
+            title: isPaused ? "Resume All" : "Pause All",
+            isActive: isPaused,
+            activeColor: .systemOrange
+        )
+        pauseItem.onClick = { [weak self] in
+            self?.terminalController.togglePause()
+            self?.approvalFlyout?.close()
+            self?.approvalFlyout = nil
+            self?.flyoutModeItems.removeAll()
+        }
+        glass.addSubview(pauseItem)
 
         panel.orderFrontRegardless()
         approvalFlyout = panel
+        (rail?.iconView as? RailSettingsButton)?.setLocked(true)
+        animateLiquidCrystal(panel: panel, cornerRadius: 12, borderAlpha: 0.3)
     }
 
-    @objc func railMenuModeSelected(_ sender: NSButton) {
-        guard let mode = sender.identifier?.rawValue else { return }
+    func closeFlyout() {
+        guard let panel = approvalFlyout else { return }
+        approvalFlyout = nil
+        flyoutModeItems.removeAll()
+        (rail?.iconView as? RailSettingsButton)?.setLocked(false)
+        animatePanelOut(panel) {}
+    }
+
+    /// Animate selection from current mode to a new mode in the flyout (for demo).
+    func animateFlyoutSelection(to mode: String) {
+        // Deactivate all, then activate target
+        for (key, item) in flyoutModeItems {
+            item.setActive(key == mode, animated: true)
+        }
         terminalController.setMode(mode)
-        approvalFlyout?.close()
-        approvalFlyout = nil
-    }
-
-    @objc func railMenuPauseToggled() {
-        terminalController.togglePause()
-        approvalFlyout?.close()
-        approvalFlyout = nil
+        updateBridgeSettings(["autoApproveMode": mode])
     }
 
     private func openFolder(_ path: String, skipDefaults: Bool = false) -> Bool {
@@ -409,8 +405,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !skipDefaults {
             // Write defaults only if project doesn't already have them
             MCPConfigManager.shared.syncToProject(path)
-            DefaultClaudeMd.syncToProject(path)
-            DefaultAgentsMd.syncToProject(path)
+            StarterManager.shared.syncAllDefaultsToProject(path)
         }
         terminalController.addProject(cwd: path)
         terminalController.window.makeKeyAndOrderFront(nil)
@@ -483,7 +478,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let x: CGFloat = panelLeftEdge
         var cursorY = screenFrame.maxY - 16  // start 16px below top
 
-        let notifHeight: CGFloat = 118
+        // "Dismiss All" bar (only if 2+ notification panels)
+        let dismissAllBarH: CGFloat = 38
+        let dismissAllBarW: CGFloat = 300
+        if notificationPanels.count >= 2, let bar = dismissAllNotificationsPanel {
+            cursorY -= dismissAllBarH
+            animatePanel(bar, to: NSRect(x: x, y: cursorY, width: dismissAllBarW, height: dismissAllBarH))
+            cursorY -= panelGap
+        }
+
+        let notifHeight: CGFloat = 112
         let notifWidth: CGFloat = 300
         for (_, panel) in notificationPanels {
             cursorY -= notifHeight
@@ -571,9 +575,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let (panel, glass) = makeGlassPanel(
             width: panelWidth, height: panelHeight, x: x, y: y,
-            cornerRadius: 12, borderAlpha: 0.12, movable: true
+            cornerRadius: 12, glassAlpha: currentOpacity, borderAlpha: 0.12, movable: true
         )
-        glass.alphaValue = currentOpacity
 
         let sessColor = colorForSession(request.session_id)
 
@@ -592,10 +595,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !tabName.isEmpty {
             var nameLabelX: CGFloat = 16
             let iconSize: CGFloat = 18
-            if let project = terminalController.projects.first(where: { $0.directory == cwd })
-                ?? terminalController.projects.first(where: { cwd.hasPrefix($0.directory) || $0.directory.hasPrefix(cwd) }),
+            let matchedProject = terminalController.projects.first(where: { $0.directory == cwd })
+                ?? terminalController.projects.first(where: { cwd.hasPrefix($0.directory) || $0.directory.hasPrefix(cwd) })
+            let iconColor = matchedProject?.color ?? sessColor
+            if let project = matchedProject,
                let iconName = project.iconName,
-               let icon = LucideIcons.render(name: iconName, size: iconSize, color: sessColor) {
+               let icon = LucideIcons.render(name: iconName, size: iconSize, color: iconColor) {
                 let iconRect = NSRect(x: 16, y: panelHeight - 30, width: iconSize, height: iconSize)
                 let iconView = NSImageView(frame: iconRect)
                 iconView.image = icon
@@ -613,7 +618,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let toolLabel = NSTextField(labelWithString: request.tool_name)
         toolLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
         toolLabel.textColor = sessColor.withAlphaComponent(0.8)
-        let toolY = tabName.isEmpty ? panelHeight - 30 : panelHeight - 46
+        let toolY = tabName.isEmpty ? panelHeight - 30 : panelHeight - 50
         toolLabel.frame = NSRect(x: 16, y: toolY, width: panelWidth - 80, height: 16)
         glass.addSubview(toolLabel)
 
@@ -623,7 +628,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         showBtn.bezelStyle = .rounded
         showBtn.isBordered = false
         showBtn.font = NSFont.systemFont(ofSize: 10, weight: .medium)
-        showBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.4)
+        showBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.6)
         showBtn.target = self
         showBtn.action = #selector(showTabClicked(_:))
         showBtn.identifier = NSUserInterfaceItemIdentifier("show_" + request.id)
@@ -634,12 +639,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !detail.isEmpty {
             let detailLabel = NSTextField(labelWithString: detail)
             detailLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-            detailLabel.textColor = NSColor(white: 1.0, alpha: 0.5)
+            detailLabel.textColor = NSColor(white: 1.0, alpha: 0.6)
             detailLabel.maximumNumberOfLines = 1
             detailLabel.lineBreakMode = .byTruncatingTail
             detailLabel.cell?.isScrollable = false
             detailLabel.isSelectable = false
-            detailLabel.frame = NSRect(x: 16, y: 46, width: panelWidth - 32, height: 16)
+            detailLabel.frame = NSRect(x: 16, y: toolY - 18, width: panelWidth - 32, height: 16)
             glass.addSubview(detailLabel)
         }
 
@@ -717,17 +722,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func dismissPanel(id: String) {
         guard let panel = panels[id] else { return }
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.15
-            panel.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
-            guard let self = self else { return }
-            panel.close()
-            self.panels.removeValue(forKey: id)
-            self.panelCwds.removeValue(forKey: id)
-            self.knownIds.remove(id)
-            self.repositionPanels()
-        })
+        panels.removeValue(forKey: id)
+        panelCwds.removeValue(forKey: id)
+        knownIds.remove(id)
+        animatePanelOut(panel) { [weak self] in
+            self?.repositionPanels()
+        }
     }
 
     func dismissAllPanels() {
@@ -762,9 +762,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let (panel, glass) = makeGlassPanel(
             width: barWidth, height: barHeight, x: x, y: y,
-            cornerRadius: 10, borderAlpha: 0.12
+            cornerRadius: 10, glassAlpha: currentOpacity, borderAlpha: 0.12
         )
-        glass.alphaValue = currentOpacity
 
         let allowAllBtn = NSButton(frame: NSRect(x: 0, y: 0, width: barWidth, height: barHeight))
         allowAllBtn.title = "Allow All (\(panels.count))"
@@ -788,13 +787,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func dismissAllowAllBar() {
         guard let panel = allowAllPanel else { return }
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.15
-            panel.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
-            panel.close()
-            self?.allowAllPanel = nil
-        })
+        allowAllPanel = nil
+        animatePanelOut(panel) {}
     }
 
     @objc func allowAllClicked() {
@@ -803,6 +797,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             sendDecision(id: id, decision: "allow")
         }
         dismissAllPanels()
+    }
+
+    func applyPanelOpacity(_ sliderVal: CGFloat) {
+        let opacity = opacityFromSlider(sliderVal)
+
+        let allPanels: [NSPanel] = Array(panels.values) + Array(notificationPanels.values)
+            + finishedPanels + [allowAllPanel, dismissAllNotificationsPanel].compactMap { $0 }
+
+        for panel in allPanels {
+            if let glass = panel.contentView as? NSVisualEffectView {
+                glass.alphaValue = opacity.glassAlpha
+                if let backing = findCharcoalBacking(in: glass) {
+                    backing.alphaValue = opacity.darkAlpha
+                }
+            }
+        }
     }
 
     func repositionPanels() {
@@ -836,12 +846,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         knownNotificationIds = incomingIds
+        updateDismissAllNotificationsBar()
         layoutAllPanels()
     }
 
     func showNotificationPanel(_ notif: HookNotification) {
         let cardWidth: CGFloat = 300
-        let cardHeight: CGFloat = 118
+        let cardHeight: CGFloat = 112
         let btnHeight: CGFloat = 28
 
         guard let screen = NSScreen.main else { return }
@@ -852,9 +863,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let (panel, glass) = makeGlassPanel(
             width: cardWidth, height: cardHeight, x: x, y: y,
-            cornerRadius: 12, borderAlpha: 0.12
+            cornerRadius: 12, glassAlpha: currentOpacity, borderAlpha: 0.12
         )
-        glass.alphaValue = currentOpacity
 
         let sessColor = colorForSession(notif.session_id ?? "")
 
@@ -872,10 +882,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !tabName.isEmpty {
             var nameLabelX: CGFloat = 16
             let iconSize: CGFloat = 18
-            if let project = terminalController.projects.first(where: { $0.directory == cwd })
-                ?? terminalController.projects.first(where: { cwd.hasPrefix($0.directory) || $0.directory.hasPrefix(cwd) }),
+            let matchedProject = terminalController.projects.first(where: { $0.directory == cwd })
+                ?? terminalController.projects.first(where: { cwd.hasPrefix($0.directory) || $0.directory.hasPrefix(cwd) })
+            let iconColor = matchedProject?.color ?? sessColor
+            if let project = matchedProject,
                let iconName = project.iconName,
-               let icon = LucideIcons.render(name: iconName, size: iconSize, color: sessColor) {
+               let icon = LucideIcons.render(name: iconName, size: iconSize, color: iconColor) {
                 let iconRect = NSRect(x: 16, y: cardHeight - 30, width: iconSize, height: iconSize)
                 let iconView = NSImageView(frame: iconRect)
                 iconView.image = icon
@@ -893,7 +905,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let headlineLabel = NSTextField(labelWithString: notif.headline)
         headlineLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
         headlineLabel.textColor = sessColor.withAlphaComponent(0.8)
-        let headlineY = tabName.isEmpty ? cardHeight - 30 : cardHeight - 46
+        let headlineY = tabName.isEmpty ? cardHeight - 30 : cardHeight - 50
         headlineLabel.frame = NSRect(x: 16, y: headlineY, width: cardWidth - 80, height: 16)
         headlineLabel.lineBreakMode = .byTruncatingTail
         glass.addSubview(headlineLabel)
@@ -905,7 +917,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             showBtn.bezelStyle = .rounded
             showBtn.isBordered = false
             showBtn.font = NSFont.systemFont(ofSize: 10, weight: .medium)
-            showBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.4)
+            showBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.6)
             showBtn.target = self
             showBtn.action = #selector(notificationShowClicked(_:))
             showBtn.identifier = NSUserInterfaceItemIdentifier("notif_" + (notif.cwd ?? ""))
@@ -917,8 +929,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !sub.isEmpty {
             let subLabel = NSTextField(labelWithString: sub)
             subLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-            subLabel.textColor = NSColor(white: 1.0, alpha: 0.45)
-            subLabel.frame = NSRect(x: 16, y: 46, width: cardWidth - 32, height: 16)
+            subLabel.textColor = NSColor(white: 1.0, alpha: 0.6)
+            subLabel.frame = NSRect(x: 16, y: headlineY - 18, width: cardWidth - 32, height: 16)
             subLabel.lineBreakMode = .byTruncatingTail
             glass.addSubview(subLabel)
         }
@@ -951,14 +963,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         notificationDismissTimers[id]?.invalidate()
         notificationDismissTimers.removeValue(forKey: id)
         guard let panel = notificationPanels.removeValue(forKey: id) else { return }
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.2
-            panel.animator().alphaValue = 0
-        }, completionHandler: {
-            panel.close()
-        })
         knownNotificationIds.remove(id)
+        updateDismissAllNotificationsBar()
         repositionNotificationPanels()
+        animatePanelOut(panel) {}
     }
 
     func repositionNotificationPanels() {
@@ -992,6 +1000,72 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         focusTabByCwd(cwd)
     }
 
+    // ── Dismiss All Notifications Bar ──
+
+    func showDismissAllNotificationsBar() {
+        let barWidth: CGFloat = 300
+        let barHeight: CGFloat = 38
+
+        guard let screen = NSScreen.main else { return }
+        let screenFrame = screen.visibleFrame
+        let x: CGFloat = panelLeftEdge
+
+        if let existing = dismissAllNotificationsPanel {
+            if let btn = existing.contentView?.subviews.compactMap({ $0 as? NSButton }).first {
+                btn.title = "Dismiss All (\(notificationPanels.count))"
+            }
+            return
+        }
+
+        let y = screenFrame.maxY + barHeight
+
+        let (panel, glass) = makeGlassPanel(
+            width: barWidth, height: barHeight, x: x, y: y,
+            cornerRadius: 10, glassAlpha: currentOpacity, borderAlpha: 0.12
+        )
+
+        let btn = NSButton(frame: NSRect(x: 0, y: 0, width: barWidth, height: barHeight))
+        btn.title = "Dismiss All (\(notificationPanels.count))"
+        btn.bezelStyle = .rounded
+        btn.isBordered = false
+        btn.wantsLayer = true
+        btn.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.1).cgColor
+        btn.layer?.cornerRadius = 10
+        btn.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        btn.contentTintColor = NSColor(white: 1.0, alpha: 0.6)
+        btn.target = self
+        btn.action = #selector(dismissAllNotificationsClicked)
+        glass.addSubview(btn)
+
+        panel.contentView = glass
+        panel.orderFrontRegardless()
+        dismissAllNotificationsPanel = panel
+
+        animateLiquidCrystal(panel: panel, cornerRadius: 10, borderAlpha: 0.12)
+    }
+
+    func hideDismissAllNotificationsBar() {
+        guard let panel = dismissAllNotificationsPanel else { return }
+        dismissAllNotificationsPanel = nil
+        animatePanelOut(panel) {}
+    }
+
+    @objc func dismissAllNotificationsClicked() {
+        let ids = Array(notificationPanels.keys)
+        for id in ids {
+            dismissNotificationOnBridge(id: id)
+        }
+        hideDismissAllNotificationsBar()
+    }
+
+    func updateDismissAllNotificationsBar() {
+        if notificationPanels.count >= 2 {
+            showDismissAllNotificationsBar()
+        } else {
+            hideDismissAllNotificationsBar()
+        }
+    }
+
     // ── Process Finished Notification ──
     // Small card shown at the top-left when a terminal process exits.
     // Persists until manually dismissed via the X button.
@@ -1008,9 +1082,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let (panel, glass) = makeGlassPanel(
             width: cardWidth, height: cardHeight, x: x, y: y,
-            cornerRadius: 12, borderAlpha: 0.12
+            cornerRadius: 12, glassAlpha: currentOpacity, borderAlpha: 0.12
         )
-        glass.alphaValue = currentOpacity
 
         let titleLabel = NSTextField(labelWithString: "\u{2713} \(tabTitle)")
         titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
@@ -1058,14 +1131,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func dismissFinishedCard(_ sender: NSButton) {
         guard let panel = sender.window as? NSPanel else { return }
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.2
-            panel.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
-            panel.close()
-            self?.finishedPanels.removeAll { $0 === panel }
+        finishedPanels.removeAll { $0 === panel }
+        animatePanelOut(panel) { [weak self] in
             self?.layoutAllPanels()
-        })
+        }
     }
 
     @objc func finishedShowClicked(_ sender: NSButton) {
@@ -1111,6 +1180,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let contentView = panel.contentView else { return }
         contentView.wantsLayer = true
         guard let layer = contentView.layer else { return }
+
+        // Hide shadow during scale-up so it doesn't sit at full size
+        panel.hasShadow = false
 
         let duration: CFTimeInterval = 0.5
         let fluidTiming = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
@@ -1175,8 +1247,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Run main animations
         CATransaction.begin()
-        CATransaction.setCompletionBlock {
+        CATransaction.setCompletionBlock { [weak panel] in
             layer.filters = nil
+            panel?.hasShadow = true
         }
         layer.add(scale, forKey: "crystalScale")
         layer.add(corners, forKey: "crystalCorners")

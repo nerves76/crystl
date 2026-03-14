@@ -286,6 +286,27 @@ class MCPConfigManager {
         }
     }
 
+    /// Writes only the selected servers from the catalog to {project}/.mcp.json.
+    func syncSelectedToProject(_ project: String, serverNames: Set<String>) {
+        guard !serverNames.isEmpty else { return }
+        let mcpPath = project + "/.mcp.json"
+        var mcpServers: [String: Any] = [:]
+        for name in serverNames {
+            guard let server = catalog.servers[name] else { continue }
+            var entry: [String: Any] = [:]
+            if let command = server.command { entry["command"] = command }
+            if let args = server.args { entry["args"] = args }
+            if let url = server.url { entry["url"] = url }
+            if let env = server.env, !env.isEmpty { entry["env"] = env }
+            mcpServers[name] = entry
+        }
+        guard !mcpServers.isEmpty else { return }
+        let root: [String: Any] = ["mcpServers": mcpServers]
+        if let data = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: URL(fileURLWithPath: mcpPath))
+        }
+    }
+
     // MARK: - Import
 
     /// Imports MCP servers from ~/.claude/settings.json into the catalog.

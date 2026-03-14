@@ -15,7 +15,9 @@ extension TerminalWindowController {
         settings.frame = container.bounds
         settingsView = settings
 
-        let terminalViews = container.subviews.map { $0 }
+        let terminalViews = container.subviews.filter {
+            !($0 is NSVisualEffectView) && !($0 is CharcoalBackingView)
+        }
 
         container.layer?.cornerRadius = 0
 
@@ -52,17 +54,9 @@ extension TerminalWindowController {
         container.wantsLayer = true
         container.layer?.add(transition, forKey: "settingsFlip")
 
-        // Save instruction file templates if edited
-        if let textView = findView(in: settings, id: "claudeMdTemplate") as? NSTextView {
-            DefaultClaudeMd.save(textView.string)
-        }
-        if let textView = findView(in: settings, id: "agentsMdTemplate") as? NSTextView {
-            DefaultAgentsMd.save(textView.string)
-        }
-
         settings.removeFromSuperview()
         self.settingsView = nil
-        for sub in container.subviews {
+        for sub in container.subviews where !(sub is NSVisualEffectView) && !(sub is CharcoalBackingView) {
             sub.isHidden = false
             sub.layer?.opacity = 1
         }
@@ -130,7 +124,7 @@ extension TerminalWindowController {
         settingsScroll.autoresizingMask = [.width, .height]
         settingsScroll.scrollerStyle = .overlay
 
-        let docHeight: CGFloat = 1100
+        let docHeight: CGFloat = 1500
         let docView = NSView(frame: NSRect(x: 0, y: 0, width: bounds.width, height: docHeight))
 
         let leftX = (bounds.width - totalWidth) / 2
@@ -138,8 +132,6 @@ extension TerminalWindowController {
 
         let claudeEnabled = UserDefaults.standard.object(forKey: "agentEnabled:claude") as? Bool ?? true
         let codexEnabled = UserDefaults.standard.object(forKey: "agentEnabled:codex") as? Bool ?? false
-        let textEditorH: CGFloat = 100
-
         // ════════════════════════════════════════
         // LEFT COLUMN — Agent Settings
         // ════════════════════════════════════════
@@ -288,47 +280,6 @@ extension TerminalWindowController {
         }
         yL -= controlToLabel
 
-        // Default CLAUDE.md
-        let claudeMdLabel = NSTextField(labelWithString: "DEFAULT CLAUDE.md")
-        claudeMdLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
-        claudeMdLabel.textColor = labelColor
-        claudeMdLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
-        docView.addSubview(claudeMdLabel); claudeControls.append(claudeMdLabel)
-        yL -= (labelH + labelToControl)
-
-        let claudeMdScroll = NSScrollView(frame: NSRect(x: leftX, y: yL - textEditorH + controlH, width: colWidth, height: textEditorH))
-        claudeMdScroll.hasVerticalScroller = true
-        claudeMdScroll.hasHorizontalScroller = false
-        claudeMdScroll.autohidesScrollers = true
-        claudeMdScroll.borderType = .noBorder
-        claudeMdScroll.drawsBackground = true
-        claudeMdScroll.backgroundColor = fieldBg
-        claudeMdScroll.wantsLayer = true
-        claudeMdScroll.layer?.cornerRadius = 8
-        claudeMdScroll.layer?.masksToBounds = true
-
-        let claudeTextView = NSTextView(frame: NSRect(x: 0, y: 0, width: colWidth - 16, height: textEditorH))
-        claudeTextView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        claudeTextView.textColor = .white
-        claudeTextView.backgroundColor = .clear
-        claudeTextView.isEditable = true
-        claudeTextView.isSelectable = true
-        claudeTextView.isRichText = false
-        claudeTextView.allowsUndo = true
-        claudeTextView.textContainerInset = NSSize(width: 6, height: 6)
-        claudeTextView.isAutomaticQuoteSubstitutionEnabled = false
-        claudeTextView.isAutomaticDashSubstitutionEnabled = false
-        claudeTextView.isAutomaticTextReplacementEnabled = false
-        claudeTextView.insertionPointColor = .white
-        claudeTextView.isVerticallyResizable = true
-        claudeTextView.isHorizontallyResizable = false
-        claudeTextView.textContainer?.widthTracksTextView = true
-        claudeTextView.identifier = NSUserInterfaceItemIdentifier("claudeMdTemplate")
-        claudeTextView.string = DefaultClaudeMd.load()
-        claudeMdScroll.documentView = claudeTextView
-        docView.addSubview(claudeMdScroll); claudeControls.append(claudeMdScroll)
-        yL -= (textEditorH + sectionBreak)
-
         if !claudeEnabled {
             for c in claudeControls { c.isHidden = true }
             yL = claudeSettingsY - 4  // collapse space
@@ -393,47 +344,6 @@ extension TerminalWindowController {
         codexDesc.frame = NSRect(x: leftX, y: yL, width: colWidth, height: 14)
         docView.addSubview(codexDesc); codexControls.append(codexDesc)
         yL -= (14 + controlToLabel)
-
-        // Default AGENTS.md
-        let agentsMdLabel = NSTextField(labelWithString: "DEFAULT AGENTS.md")
-        agentsMdLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
-        agentsMdLabel.textColor = labelColor
-        agentsMdLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
-        docView.addSubview(agentsMdLabel); codexControls.append(agentsMdLabel)
-        yL -= (labelH + labelToControl)
-
-        let agentsMdScroll = NSScrollView(frame: NSRect(x: leftX, y: yL - textEditorH + controlH, width: colWidth, height: textEditorH))
-        agentsMdScroll.hasVerticalScroller = true
-        agentsMdScroll.hasHorizontalScroller = false
-        agentsMdScroll.autohidesScrollers = true
-        agentsMdScroll.borderType = .noBorder
-        agentsMdScroll.drawsBackground = true
-        agentsMdScroll.backgroundColor = fieldBg
-        agentsMdScroll.wantsLayer = true
-        agentsMdScroll.layer?.cornerRadius = 8
-        agentsMdScroll.layer?.masksToBounds = true
-
-        let agentsTextView = NSTextView(frame: NSRect(x: 0, y: 0, width: colWidth - 16, height: textEditorH))
-        agentsTextView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        agentsTextView.textColor = .white
-        agentsTextView.backgroundColor = .clear
-        agentsTextView.isEditable = true
-        agentsTextView.isSelectable = true
-        agentsTextView.isRichText = false
-        agentsTextView.allowsUndo = true
-        agentsTextView.textContainerInset = NSSize(width: 6, height: 6)
-        agentsTextView.isAutomaticQuoteSubstitutionEnabled = false
-        agentsTextView.isAutomaticDashSubstitutionEnabled = false
-        agentsTextView.isAutomaticTextReplacementEnabled = false
-        agentsTextView.insertionPointColor = .white
-        agentsTextView.isVerticallyResizable = true
-        agentsTextView.isHorizontallyResizable = false
-        agentsTextView.textContainer?.widthTracksTextView = true
-        agentsTextView.identifier = NSUserInterfaceItemIdentifier("agentsMdTemplate")
-        agentsTextView.string = DefaultAgentsMd.load()
-        agentsMdScroll.documentView = agentsTextView
-        docView.addSubview(agentsMdScroll); codexControls.append(agentsMdScroll)
-        yL -= (textEditorH + sectionBreak)
 
         if !codexEnabled {
             for c in codexControls { c.isHidden = true }
@@ -566,6 +476,107 @@ extension TerminalWindowController {
         addBtn.target = self
         addBtn.action = #selector(addMCPServer)
         docView.addSubview(addBtn)
+        yR -= (controlH + sectionBreak)
+
+        // ── Starter Files ──
+        let starterTitle = NSTextField(labelWithString: "DEFAULT STARTER FILES")
+        starterTitle.font = NSFont.systemFont(ofSize: 10, weight: .bold)
+        starterTitle.textColor = labelColor
+        starterTitle.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 14)
+        docView.addSubview(starterTitle)
+        yR -= (14 + 6)
+
+        let starterDesc = NSTextField(labelWithString: "Templates written to new projects")
+        starterDesc.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        starterDesc.textColor = NSColor(white: 1.0, alpha: 0.5)
+        starterDesc.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 14)
+        docView.addSubview(starterDesc)
+        yR -= (14 + controlToLabel)
+
+        let starterMgr = StarterManager.shared
+
+        if starterMgr.starters.isEmpty {
+            yR -= 4
+            let emptyLabel = NSTextField(labelWithString: "No starter files configured")
+            emptyLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+            emptyLabel.textColor = NSColor(white: 1.0, alpha: 0.35)
+            emptyLabel.alignment = .center
+            emptyLabel.frame = NSRect(x: rightX + 4, y: yR - 16, width: colWidth - 8, height: 16)
+            docView.addSubview(emptyLabel)
+            yR -= 24
+        } else {
+            for starter in starterMgr.starters {
+                yR -= 26
+                let rowY = yR
+
+                let toggle = NSButton(checkboxWithTitle: "", target: self,
+                                      action: #selector(starterEnabledToggled(_:)))
+                toggle.state = starter.enabledByDefault ? .on : .off
+                toggle.identifier = NSUserInterfaceItemIdentifier("starterEnabled:\(starter.id.uuidString)")
+                toggle.frame = NSRect(x: rightX + 4, y: rowY, width: 20, height: 18)
+                docView.addSubview(toggle)
+
+                let nameLabel = NSTextField(labelWithString: starter.filename)
+                nameLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+                nameLabel.textColor = .white
+                nameLabel.lineBreakMode = .byTruncatingTail
+                nameLabel.frame = NSRect(x: rightX + 30, y: rowY, width: colWidth - 82, height: 16)
+                docView.addSubview(nameLabel)
+
+                let editBtn = NSButton(frame: NSRect(
+                    x: rightX + colWidth - 44, y: rowY, width: 22, height: 16))
+                editBtn.title = "✎"
+                editBtn.bezelStyle = .inline
+                editBtn.isBordered = false
+                editBtn.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+                editBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.5)
+                editBtn.identifier = NSUserInterfaceItemIdentifier("starterEdit:\(starter.id.uuidString)")
+                editBtn.target = self
+                editBtn.action = #selector(editStarter(_:))
+                docView.addSubview(editBtn)
+
+                let removeBtn = NSButton(frame: NSRect(
+                    x: rightX + colWidth - 18, y: rowY + 1, width: 16, height: 16))
+                removeBtn.title = "×"
+                removeBtn.bezelStyle = .inline
+                removeBtn.isBordered = false
+                removeBtn.font = NSFont.systemFont(ofSize: 14, weight: .light)
+                removeBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.3)
+                removeBtn.identifier = NSUserInterfaceItemIdentifier("starterDelete:\(starter.id.uuidString)")
+                removeBtn.target = self
+                removeBtn.action = #selector(deleteStarter(_:))
+                docView.addSubview(removeBtn)
+            }
+        }
+        yR -= (controlH + 14)
+
+        let addStarterBtn = NSButton(frame: NSRect(x: rightX, y: yR, width: colWidth, height: controlH))
+        addStarterBtn.title = "+ Add Starter File"
+        addStarterBtn.bezelStyle = .rounded
+        addStarterBtn.isBordered = false
+        addStarterBtn.wantsLayer = true
+        addStarterBtn.layer?.backgroundColor = fieldBg.cgColor
+        addStarterBtn.layer?.cornerRadius = 8
+        addStarterBtn.font = NSFont.systemFont(ofSize: 10, weight: .medium)
+        addStarterBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.6)
+        addStarterBtn.target = self
+        addStarterBtn.action = #selector(addStarter)
+        docView.addSubview(addStarterBtn)
+        yR -= (controlH + sectionBreak)
+
+        // ── Demo ──
+        let demoBtn = NSButton(frame: NSRect(x: rightX, y: yR, width: colWidth, height: controlH))
+        demoBtn.title = "▶  Run Demo"
+        demoBtn.bezelStyle = .rounded
+        demoBtn.isBordered = false
+        demoBtn.wantsLayer = true
+        demoBtn.layer?.backgroundColor = fieldBg.cgColor
+        demoBtn.layer?.cornerRadius = 8
+        demoBtn.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        demoBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.6)
+        demoBtn.target = self
+        demoBtn.action = #selector(runDemo)
+        docView.addSubview(demoBtn)
         yR -= (controlH + sectionBreak)
 
         // ── Finalize scroll view ──
@@ -777,6 +788,52 @@ extension TerminalWindowController {
         }
     }
 
+    // MARK: - Starter File Actions
+
+    @objc func editStarter(_ sender: NSButton) {
+        guard let raw = sender.identifier?.rawValue,
+              raw.hasPrefix("starterEdit:"),
+              let uuid = UUID(uuidString: String(raw.dropFirst(12))) else { return }
+        guard let starter = StarterManager.shared.starters.first(where: { $0.id == uuid }) else { return }
+        StarterEditorPanel.shared.show(starter: starter, relativeTo: window) { [weak self] in
+            self?.rebuildSettings()
+        }
+    }
+
+    @objc func addStarter() {
+        let starter = StarterManager.shared.add(name: "new-file.md", filename: "new-file.md")
+        StarterEditorPanel.shared.show(starter: starter, relativeTo: window) { [weak self] in
+            self?.rebuildSettings()
+        }
+    }
+
+    @objc func deleteStarter(_ sender: NSButton) {
+        guard let raw = sender.identifier?.rawValue,
+              raw.hasPrefix("starterDelete:"),
+              let uuid = UUID(uuidString: String(raw.dropFirst(14))) else { return }
+        StarterManager.shared.remove(id: uuid)
+        rebuildSettings()
+    }
+
+    @objc func starterEnabledToggled(_ sender: NSButton) {
+        guard let raw = sender.identifier?.rawValue,
+              raw.hasPrefix("starterEnabled:"),
+              let uuid = UUID(uuidString: String(raw.dropFirst(15))) else { return }
+        guard var starter = StarterManager.shared.starters.first(where: { $0.id == uuid }) else { return }
+        starter.enabledByDefault = sender.state == .on
+        StarterManager.shared.update(starter)
+    }
+
+    /// Rebuilds the settings view in place (no flip animation).
+    private func rebuildSettings() {
+        guard let container = window.contentView, let old = settingsView else { return }
+        old.removeFromSuperview()
+        let newSettings = buildSettingsView()
+        newSettings.frame = container.bounds
+        settingsView = newSettings
+        container.addSubview(newSettings)
+    }
+
     func findView(in view: NSView, id: String) -> NSView? {
         if view.identifier?.rawValue == id { return view }
         for sub in view.subviews {
@@ -788,79 +845,570 @@ extension TerminalWindowController {
         }
         return nil
     }
-}
 
-// ── Default CLAUDE.md Template ──
-
-/// Manages the default CLAUDE.md content written to new projects.
-/// Stored at ~/.config/crystl/default-claude.md.
-class DefaultClaudeMd {
-    private static let configDir = NSHomeDirectory() + "/.config/crystl"
-    private static let path = NSHomeDirectory() + "/.config/crystl/default-claude.md"
-
-    static func load() -> String {
-        guard let data = FileManager.default.contents(atPath: path),
-              let text = String(data: data, encoding: .utf8) else {
-            return ""
-        }
-        return text
-    }
-
-    static func save(_ content: String) {
-        let fm = FileManager.default
-        if !fm.fileExists(atPath: configDir) {
-            try? fm.createDirectory(atPath: configDir, withIntermediateDirectories: true)
-        }
-        try? content.write(toFile: path, atomically: true, encoding: .utf8)
-    }
-
-    /// Writes the template to {project}/CLAUDE.md if it doesn't already exist.
-    /// Does nothing if the template is empty or the file already exists.
-    static func syncToProject(_ project: String) {
-        let claudeMdPath = project + "/CLAUDE.md"
-        let fm = FileManager.default
-        guard !fm.fileExists(atPath: claudeMdPath) else { return }
-
-        let content = load()
-        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        try? content.write(toFile: claudeMdPath, atomically: true, encoding: .utf8)
+    @objc func runDemo() {
+        guard let appDelegate = NSApp.delegate as? AppDelegate else { return }
+        flipToTerminal()
+        DemoRunner.run(terminalController: self, appDelegate: appDelegate)
     }
 }
 
-// ── Default AGENTS.md Template ──
+// ── Demo Runner ──
 
-/// Manages the default AGENTS.md content written to new projects (for Codex CLI).
-/// Stored at ~/.config/crystl/default-agents.md.
-class DefaultAgentsMd {
-    private static let configDir = NSHomeDirectory() + "/.config/crystl"
-    private static let path = NSHomeDirectory() + "/.config/crystl/default-agents.md"
+/// Orchestrates the full Crystl demo: fades out, sets up projects, animates back in,
+/// shows code in terminal, then sends approval/notification events to the bridge.
+class DemoRunner {
+    static let demoDir = "/tmp/crystl-demo"
+    static let bridge = "http://127.0.0.1:19280"
 
-    static func load() -> String {
-        guard let data = FileManager.default.contents(atPath: path),
-              let text = String(data: data, encoding: .utf8) else {
-            return ""
-        }
-        return text
+    struct DemoProject {
+        let name: String
+        let icon: String
+        let color: String
     }
 
-    static func save(_ content: String) {
-        let fm = FileManager.default
-        if !fm.fileExists(atPath: configDir) {
-            try? fm.createDirectory(atPath: configDir, withIntermediateDirectories: true)
-        }
-        try? content.write(toFile: path, atomically: true, encoding: .utf8)
+    static let projects = [
+        DemoProject(name: "webapp", icon: "rocket", color: "#7AA2F7"),
+        DemoProject(name: "api-server", icon: "zap", color: "#F7768E"),
+        DemoProject(name: "design-system", icon: "gem", color: "#BB9AF7"),
+        DemoProject(name: "docs", icon: "book", color: "#9ECE6A"),
+        DemoProject(name: "infra", icon: "shield", color: "#FF9E64"),
+    ]
+
+    static func run(terminalController tc: TerminalWindowController, appDelegate: AppDelegate) {
+        guard let win = tc.window else { return }
+
+        // 1. Fade out window + rail
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.4
+            win.animator().alphaValue = 0
+            appDelegate.rail?.panel.animator().alphaValue = 0
+        }, completionHandler: {
+            // 2. Close all tabs except one
+            while tc.projects.count > 1 {
+                tc.closeProject(tc.projects.count - 1)
+            }
+            // Remove tiles from rail
+            appDelegate.rail?.removeAllTiles()
+
+            // 3. Create demo project files on disk
+            createDemoFiles()
+
+            // 4. Set bridge to manual mode
+            saveBridgeSettings()
+            setBridgeManualMode()
+
+            // 5. Open demo projects — first one replaces current tab
+            let firstDir = demoDir + "/webapp"
+            tc.projects[0].sessions.forEach { $0.terminalView.removeFromSuperview() }
+            tc.projects.removeAll()
+
+            for proj in projects {
+                let path = demoDir + "/" + proj.name
+                let color = NSColor(hex: proj.color) ?? .white
+                let project = ProjectTab(directory: path, color: color)
+                project.iconName = proj.icon
+                let session = project.addSession(frame: tc.contentArea.bounds)
+                session.terminalView.processDelegate = tc
+                tc.projects.append(project)
+
+                tc.configureTerminalAppearance(session.terminalView, sessionId: session.id)
+                session.terminalView.frame = tc.contentArea.bounds
+                session.terminalView.isHidden = true
+                tc.contentArea.addSubview(session.terminalView)
+
+                tc.onTabAdded?(project)
+            }
+
+            tc.selectedProjectIndex = 0
+            tc.selectProject(0)
+            tc.updateTabBar()
+
+            // Make window visible and animate in
+            win.alphaValue = 1
+            win.makeKeyAndOrderFront(nil)
+            appDelegate.rail?.panel.alphaValue = 1
+            appDelegate.rail?.animateOpen()
+
+            if let container = win.contentView {
+                tc.animateWindowOpen(container: container)
+            }
+
+            // 7a. Reset opacity and show approval flyout after rail finishes sliding in (0.6s)
+            tc.setOpacity(0.5)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                tc.syncSettings(mode: "manual", paused: false)
+                if let iconView = appDelegate.rail?.iconView {
+                    appDelegate.showRailSettingsMenu(from: iconView)
+                }
+            }
+
+            // After 1.8s, animate selection down to "smart"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+                appDelegate.animateFlyoutSelection(to: "smart")
+                tc.syncSettings(mode: "smart", paused: false)
+            }
+
+            // After 3.0s, close the flyout
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                appDelegate.closeFlyout()
+            }
+
+            // 7b. Start shells AFTER flyout closes so typing happens after menu
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.4) {
+                for project in tc.projects {
+                    for session in project.sessions {
+                        session.start()
+                        tc.hideScroller(in: session.terminalView, sessionId: session.id)
+                    }
+                }
+
+                // 8. After autorun finishes (~10s), send bridge events
+                DispatchQueue.global().asyncAfter(deadline: .now() + 10) {
+
+                    // Phase 1: webapp approvals
+                    sendApprovalEvents()
+
+                    // Phase 2: auto-click Allow All after 3s
+                    Thread.sleep(forTimeInterval: 3)
+                    DispatchQueue.main.async {
+                        appDelegate.allowAllClicked()
+                    }
+
+                    // Phase 3: api-server approvals (different tile activates)
+                    Thread.sleep(forTimeInterval: 1.5)
+                    sendApiServerApprovalEvents()
+
+                    // Phase 4: notifications
+                    Thread.sleep(forTimeInterval: 2)
+                    sendNotificationEvents()
+
+                    // Phase 5: auto-click Allow All + Dismiss All to end cleanly
+                    Thread.sleep(forTimeInterval: 3)
+                    DispatchQueue.main.async {
+                        appDelegate.allowAllClicked()
+                        appDelegate.dismissAllNotificationsClicked()
+                    }
+
+                    // Phase 6: show New Project panel
+                    Thread.sleep(forTimeInterval: 1.5)
+                    DispatchQueue.main.async {
+                        appDelegate.rail?.showNewProjectPanel()
+                    }
+                    // Type project name
+                    Thread.sleep(forTimeInterval: 0.8)
+                    let demoName = "my-saas-app"
+                    for (i, ch) in demoName.enumerated() {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + Double(i) * 0.06) {
+                            let partial = String(demoName.prefix(i + 1))
+                            appDelegate.rail?.newProjectPanel.setName(partial)
+                        }
+                    }
+                    // Select color + icon after typing finishes
+                    let typeTime = Double(demoName.count) * 0.06 + 0.4
+                    Thread.sleep(forTimeInterval: typeTime)
+                    DispatchQueue.main.async {
+                        appDelegate.rail?.newProjectPanel.selectColor(4)  // pick a color
+                    }
+                    Thread.sleep(forTimeInterval: 0.6)
+                    DispatchQueue.main.async {
+                        appDelegate.rail?.newProjectPanel.selectIcon("rocket")
+                    }
+                    // Close after a pause
+                    Thread.sleep(forTimeInterval: 2.0)
+                    DispatchQueue.main.async {
+                        appDelegate.rail?.newProjectPanel.dismiss()
+                    }
+
+                    // Restore settings
+                    Thread.sleep(forTimeInterval: 1)
+                    restoreBridgeSettings()
+                }
+            }
+        })
     }
 
-    /// Writes the template to {project}/AGENTS.md if it doesn't already exist.
-    /// Does nothing if the template is empty or the file already exists.
-    static func syncToProject(_ project: String) {
-        let agentsMdPath = project + "/AGENTS.md"
-        let fm = FileManager.default
-        guard !fm.fileExists(atPath: agentsMdPath) else { return }
+    // MARK: - File Creation
 
-        let content = load()
-        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        try? content.write(toFile: agentsMdPath, atomically: true, encoding: .utf8)
+    static func createDemoFiles() {
+        let fm = FileManager.default
+        try? fm.removeItem(atPath: demoDir)
+
+        // webapp
+        let webapp = demoDir + "/webapp"
+        try? fm.createDirectory(atPath: webapp + "/src/components", withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: webapp + "/src/api", withIntermediateDirectories: true)
+        try? fm.createDirectory(atPath: webapp + "/.crystl", withIntermediateDirectories: true)
+        try? "{ \"color\": \"#7AA2F7\", \"icon\": \"rocket\" }".write(toFile: webapp + "/.crystl/project.json", atomically: true, encoding: .utf8)
+
+        let dashboardCode = """
+        import React, { useState, useEffect } from 'react';
+        import { Card, Grid, Metric, Text, AreaChart } from '@tremor/react';
+        import { fetchAnalytics, AnalyticsData } from '../api/analytics';
+
+        interface DashboardProps {
+          projectId: string;
+          dateRange: [Date, Date];
+        }
+
+        export default function Dashboard({ projectId, dateRange }: DashboardProps) {
+          const [data, setData] = useState<AnalyticsData | null>(null);
+          const [loading, setLoading] = useState(true);
+
+          useEffect(() => {
+            setLoading(true);
+            fetchAnalytics(projectId, dateRange)
+              .then(setData)
+              .finally(() => setLoading(false));
+          }, [projectId, dateRange]);
+
+          if (loading) return <Skeleton rows={4} />;
+
+          return (
+            <Grid numItems={3} className="gap-6">
+              <Card decoration="top" decorationColor="blue">
+                <Text>Active Users</Text>
+                <Metric>{data?.activeUsers.toLocaleString()}</Metric>
+              </Card>
+              <Card decoration="top" decorationColor="emerald">
+                <Text>Revenue</Text>
+                <Metric>${data?.revenue.toLocaleString()}</Metric>
+              </Card>
+              <Card decoration="top" decorationColor="amber">
+                <Text>Conversion Rate</Text>
+                <Metric>{data?.conversionRate}%</Metric>
+              </Card>
+              <AreaChart
+                className="h-72 mt-4"
+                data={data?.timeline ?? []}
+                index="date"
+                categories={["pageViews", "uniqueVisitors"]}
+                colors={["blue", "cyan"]}
+                showAnimation={true}
+              />
+            </Grid>
+          );
+        }
+        """
+        try? dashboardCode.write(toFile: webapp + "/src/components/Dashboard.tsx", atomically: true, encoding: .utf8)
+
+        // Autorun script for webapp
+        let autorun = """
+        clear
+        sleep 0.5
+        echo -e "\\033[0;36m❯\\033[0m \\c"
+        for c in c l a u d e; do echo -n "$c"; sleep 0.08; done
+        echo ""
+        sleep 1
+        echo ""
+        O="\\033[38;5;208m"; W="\\033[1;37m"; D="\\033[38;5;245m"; R="\\033[0m"; G="\\033[0;37m"
+        echo -e "${O}╭─── Claude Code v2.1.75 ────────────────────────────────────────────────────────────────╮${R}"
+        echo -e "${O}│${R}                                             ${O}│${R} ${W}Tips for getting started${R}                 ${O}│${R}"
+        echo -e "${O}│${R}             ${W}Welcome back Chris!${R}             ${O}│${R} Run ${W}/init${R} to create a CLAUDE.md file     ${O}│${R}"
+        echo -e "${O}│${R}                                             ${O}│${R} ${D}───────────────────────────────────────${R}  ${O}│${R}"
+        echo -e "${O}│${R}                   ${O}▐▛███▜▌${R}                   ${O}│${R} ${W}Recent activity${R}                          ${O}│${R}"
+        echo -e "${O}│${R}                  ${O}▝▜█████▛▘${R}                  ${O}│${R} ${D}No recent activity${R}                       ${O}│${R}"
+        echo -e "${O}│${R}                    ${O}▘▘ ▝▝${R}                    ${O}│${R}                                          ${O}│${R}"
+        echo -e "${O}│${R}                                             ${O}│${R}                                          ${O}│${R}"
+        echo -e "${O}│${R}   ${D}Opus 4.6 (1M context) · Claude Max ·${R}      ${O}│${R}                                          ${O}│${R}"
+        echo -e "${O}│${R}        ${G}/tmp/crystl-demo/webapp${R}              ${O}│${R}                                          ${O}│${R}"
+        echo -e "${O}╰────────────────────────────────────────────────────────────────────────────────────────╯${R}"
+        echo ""
+        echo -e "  ${D}↑ Opus now defaults to 1M context · 5x more room, same pricing${R}"
+        echo ""
+        sleep 1
+        echo -ne "\\033[1;35m❯\\033[0m "
+        prompt="Add error handling with a retry button to the Dashboard component"
+        for (( i=0; i<${#prompt}; i++ )); do
+            echo -n "${prompt:$i:1}"
+            sleep 0.025
+        done
+        echo ""
+        sleep 1.5
+        echo ""
+        echo -e "\\033[38;5;245m● Reading src/components/Dashboard.tsx...\\033[0m"
+        sleep 0.8
+        echo -e "\\033[38;5;245m● Analyzing component structure...\\033[0m"
+        sleep 0.6
+        echo -e "\\033[38;5;245m● Planning changes...\\033[0m"
+        sleep 1
+        echo ""
+        echo -e "I'll add error handling with a retry mechanism. This requires:"
+        echo ""
+        echo -e "  1. Adding error state and refetch logic to the hook"
+        echo -e "  2. Creating an \\033[1mErrorCard\\033[0m component with a retry button"
+        echo -e "  3. Running the test suite to verify"
+        echo ""
+        sleep 0.5
+        echo -e "\\033[0;33m⏳ Waiting for approval...\\033[0m"
+        """
+        try? autorun.write(toFile: webapp + "/.crystl/autorun.sh", atomically: true, encoding: .utf8)
+
+        // Other projects — just config + icon
+        for proj in projects where proj.name != "webapp" {
+            let dir = demoDir + "/" + proj.name
+            try? fm.createDirectory(atPath: dir + "/.crystl", withIntermediateDirectories: true)
+            let config = "{ \"color\": \"\(proj.color)\", \"icon\": \"\(proj.icon)\" }"
+            try? config.write(toFile: dir + "/.crystl/project.json", atomically: true, encoding: .utf8)
+        }
+    }
+
+    // MARK: - Bridge Communication
+
+    private static var savedSettings: String?
+
+    static func saveBridgeSettings() {
+        guard let url = URL(string: bridge + "/settings") else { return }
+        let sem = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: url) { data, _, _ in
+            if let data = data { savedSettings = String(data: data, encoding: .utf8) }
+            sem.signal()
+        }.resume()
+        _ = sem.wait(timeout: .now() + 2)
+    }
+
+    static func setBridgeManualMode() {
+        guard let url = URL(string: bridge + "/settings") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body = """
+        {"autoApproveMode":"manual","enabledNotifications":{"Stop":true,"PostToolUse":true,"SubagentStop":true,"TaskCompleted":true,"Notification":true,"TeammateIdle":true,"SessionEnd":true}}
+        """
+        req.httpBody = body.data(using: .utf8)
+        URLSession.shared.dataTask(with: req).resume()
+    }
+
+    static func restoreBridgeSettings() {
+        guard let saved = savedSettings, let url = URL(string: bridge + "/settings") else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = saved.data(using: .utf8)
+        URLSession.shared.dataTask(with: req).resume()
+        savedSettings = nil
+    }
+
+    static func postBridge(path: String, json: String) {
+        guard let url = URL(string: bridge + path) else { return }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = json.data(using: .utf8)
+        URLSession.shared.dataTask(with: req).resume()
+    }
+
+    static func sendApprovalEvents() {
+        postBridge(path: "/hook?type=PermissionRequest", json: """
+        {"tool_name":"Edit","tool_input":{"file_path":"src/components/Dashboard.tsx","old_string":"if (loading) return <Skeleton rows={4} />;","new_string":"if (loading) return <Skeleton rows={4} />;\\n  if (error) return <ErrorCard message={error} onRetry={refetch} />;"},"cwd":"/tmp/crystl-demo/webapp","session_id":"demo-webapp-001","permission_mode":"default"}
+        """)
+        Thread.sleep(forTimeInterval: 1)
+
+        postBridge(path: "/hook?type=PermissionRequest", json: """
+        {"tool_name":"Write","tool_input":{"file_path":"src/components/ErrorCard.tsx","content":"export function ErrorCard({ message, onRetry }) { ... }"},"cwd":"/tmp/crystl-demo/webapp","session_id":"demo-webapp-001","permission_mode":"default"}
+        """)
+        Thread.sleep(forTimeInterval: 1)
+
+        postBridge(path: "/hook?type=PermissionRequest", json: """
+        {"tool_name":"Bash","tool_input":{"command":"npm test -- --run src/components/Dashboard.test.tsx"},"cwd":"/tmp/crystl-demo/webapp","session_id":"demo-webapp-001","permission_mode":"default"}
+        """)
+    }
+
+    static func sendApiServerApprovalEvents() {
+        postBridge(path: "/hook?type=PermissionRequest", json: """
+        {"tool_name":"Edit","tool_input":{"file_path":"src/routes/auth.rs","old_string":"let access_token = encode(","new_string":"let access_token = encode_with_rotation("},"cwd":"/tmp/crystl-demo/api-server","session_id":"demo-api-002","permission_mode":"default"}
+        """)
+        Thread.sleep(forTimeInterval: 1)
+
+        postBridge(path: "/hook?type=PermissionRequest", json: """
+        {"tool_name":"Bash","tool_input":{"command":"cargo test auth::tests -- --nocapture"},"cwd":"/tmp/crystl-demo/api-server","session_id":"demo-api-002","permission_mode":"default"}
+        """)
+    }
+
+    static func sendNotificationEvents() {
+        postBridge(path: "/hook?type=Stop", json: """
+        {"session_id":"demo-api-002","cwd":"/tmp/crystl-demo/api-server","last_assistant_message":"Auth module refactored. JWT refresh token rotation enabled on all endpoints.","stop_hook_active":true}
+        """)
+        Thread.sleep(forTimeInterval: 0.8)
+
+        postBridge(path: "/hook?type=Stop", json: """
+        {"session_id":"demo-infra-003","cwd":"/tmp/crystl-demo/infra","last_assistant_message":"Terraform plan ready. 3 resources to add, 1 to modify, 0 to destroy.","stop_hook_active":true}
+        """)
+    }
+}
+
+
+// ── Starter Editor Panel ──
+
+/// Floating glass panel for editing a starter file's filename and content.
+class StarterEditorPanel: NSObject, NSTextFieldDelegate {
+    static let shared = StarterEditorPanel()
+
+    private var panel: NSPanel?
+    private var starterId: UUID?
+    private var filenameField: NSTextField?
+    private var contentView: NSTextView?
+    private var onDismiss: (() -> Void)?
+
+    func show(starter: StarterFile, relativeTo window: NSWindow, onDismiss: @escaping () -> Void) {
+        dismiss()
+        self.starterId = starter.id
+        self.onDismiss = onDismiss
+
+        let panelW: CGFloat = 700
+        let panelH: CGFloat = 800
+
+        let winFrame = window.frame
+        let x = winFrame.midX - panelW / 2
+        let y = winFrame.midY - panelH / 2
+
+        let p = NSPanel(
+            contentRect: NSRect(x: x, y: y, width: panelW, height: panelH),
+            styleMask: [.titled, .closable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        p.isFloatingPanel = true
+        p.level = .floating
+        p.titlebarAppearsTransparent = true
+        p.titleVisibility = .hidden
+        p.backgroundColor = .clear
+        p.isOpaque = false
+        p.hasShadow = true
+        p.isMovableByWindowBackground = true
+
+        let glass = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: panelW, height: panelH))
+        glass.material = .hudWindow
+        glass.blendingMode = .behindWindow
+        glass.state = .active
+        glass.appearance = NSAppearance(named: .darkAqua)
+        glass.maskImage = roundedMaskImage(size: NSSize(width: panelW, height: panelH), radius: 12)
+        glass.wantsLayer = true
+        glass.layer?.borderWidth = 0.5
+        glass.layer?.borderColor = NSColor(white: 1.0, alpha: 0.3).cgColor
+
+        let labelColor = NSColor(white: 1.0, alpha: 0.7)
+        let fieldBg = NSColor(white: 1.0, alpha: 0.12)
+        let pad: CGFloat = 16
+        var y0 = panelH - 48  // clear traffic light buttons
+
+        // Title
+        let title = NSTextField(labelWithString: "Edit Starter File")
+        title.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
+        title.textColor = .white
+        title.frame = NSRect(x: pad, y: y0, width: panelW - pad * 2, height: 18)
+        glass.addSubview(title)
+        y0 -= 34
+
+        // Filename
+        let fnLabel = NSTextField(labelWithString: "FILENAME")
+        fnLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+        fnLabel.textColor = labelColor
+        fnLabel.frame = NSRect(x: pad, y: y0, width: panelW - pad * 2, height: 14)
+        glass.addSubview(fnLabel)
+        y0 -= 28  // 14 label + 14 gap
+
+        let fnField = NSTextField(string: starter.filename)
+        fnField.cell = VerticallyCenteredTextFieldCell(textCell: starter.filename)
+        fnField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        fnField.textColor = .white
+        fnField.isBordered = false
+        fnField.isBezeled = false
+        fnField.drawsBackground = false
+        fnField.isEditable = true
+        fnField.wantsLayer = true
+        fnField.layer?.backgroundColor = fieldBg.cgColor
+        fnField.layer?.cornerRadius = 8
+        fnField.layer?.masksToBounds = true
+        fnField.frame = NSRect(x: pad, y: y0, width: panelW - pad * 2, height: 28)
+        glass.addSubview(fnField)
+        self.filenameField = fnField
+        y0 -= 42  // 28 field + 14 gap
+
+        // Content
+        let contentLabel = NSTextField(labelWithString: "CONTENT")
+        contentLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+        contentLabel.textColor = labelColor
+        contentLabel.frame = NSRect(x: pad, y: y0, width: panelW - pad * 2, height: 14)
+        glass.addSubview(contentLabel)
+        y0 -= 20  // 14 label + 6 gap
+
+        let editorH = y0 - 48
+        let editorScroll = NSScrollView(frame: NSRect(x: pad, y: 48, width: panelW - pad * 2, height: editorH))
+        editorScroll.hasVerticalScroller = true
+        editorScroll.hasHorizontalScroller = false
+        editorScroll.autohidesScrollers = true
+        editorScroll.borderType = .noBorder
+        editorScroll.drawsBackground = false
+        editorScroll.wantsLayer = true
+        editorScroll.layer?.cornerRadius = 8
+        editorScroll.layer?.masksToBounds = true
+        editorScroll.layer?.backgroundColor = fieldBg.cgColor
+
+        let tv = NSTextView(frame: NSRect(x: 0, y: 0, width: panelW - pad * 2, height: editorH))
+        tv.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        tv.textColor = .white
+        tv.backgroundColor = .clear
+        tv.drawsBackground = false
+        tv.isEditable = true
+        tv.isSelectable = true
+        tv.isRichText = false
+        tv.allowsUndo = true
+        tv.textContainerInset = NSSize(width: 6, height: 6)
+        tv.isVerticallyResizable = true
+        tv.isHorizontallyResizable = false
+        tv.autoresizingMask = [.width]
+        tv.textContainer?.widthTracksTextView = true
+        tv.string = starter.content
+        editorScroll.documentView = tv
+        glass.addSubview(editorScroll)
+        self.contentView = tv
+
+        // Save button
+        let saveBtn = NSButton(frame: NSRect(x: pad, y: 12, width: panelW - pad * 2, height: 28))
+        saveBtn.title = "Save"
+        saveBtn.bezelStyle = .rounded
+        saveBtn.isBordered = false
+        saveBtn.wantsLayer = true
+        saveBtn.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.3).cgColor
+        saveBtn.layer?.cornerRadius = 6
+        saveBtn.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        saveBtn.contentTintColor = NSColor.systemGreen
+        saveBtn.target = self
+        saveBtn.action = #selector(saveClicked)
+        glass.addSubview(saveBtn)
+
+        p.contentView = glass
+        p.orderFrontRegardless()
+        p.makeKey()
+        panel = p
+    }
+
+    @objc private func saveClicked() {
+        guard let sid = starterId,
+              var starter = StarterManager.shared.starters.first(where: { $0.id == sid }) else {
+            dismiss()
+            return
+        }
+        if let fn = filenameField?.stringValue.trimmingCharacters(in: .whitespaces), !fn.isEmpty {
+            starter.filename = fn
+            starter.name = fn
+        }
+        if let content = contentView?.string {
+            starter.content = content
+        }
+        StarterManager.shared.update(starter)
+        dismiss()
+    }
+
+    func dismiss() {
+        panel?.close()
+        panel = nil
+        filenameField = nil
+        contentView = nil
+        let callback = onDismiss
+        onDismiss = nil
+        callback?()
     }
 }
 
