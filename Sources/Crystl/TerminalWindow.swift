@@ -379,7 +379,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
             setupButton = btn
         }
 
-        setupButton?.title = "Project Settings"
+        setupButton?.title = "Crystal Settings"
         let btnW: CGFloat = 110
         let btnH: CGFloat = 20
         setupButton?.frame = NSRect(

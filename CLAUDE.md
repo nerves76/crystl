@@ -16,10 +16,10 @@ killall Crystl; open ~/Applications/Crystl.app  # restart after install
 ```
 main.swift              Entry point, NSApplication setup, main menu
 AppDelegate.swift       App lifecycle, bridge polling, approval/notification panels
-TerminalWindow.swift    Window, tab bar, tab/shard management, settings flip, terminal config
-TerminalSession.swift   TerminalSession (shard), ProjectTab, InsetFrostView, GlowButton, TerminalDropView
-TabBarView.swift        TabBarView (project tabs) + SessionBarView (shard bar)
-CrystalRail.swift       Screen-edge glass rail: tiles, add button, new project panel
+TerminalWindow.swift    Window, crystal bar, crystal/shard management, settings flip, terminal config
+TerminalSession.swift   TerminalSession (shard), ProjectTab (crystal), InsetFrostView, GlowButton, TerminalDropView
+TabBarView.swift        TabBarView (crystal tabs) + SessionBarView (shard bar)
+CrystalRail.swift       Screen-edge glass rail: tiles, add button, new crystal panel
 GitWorktree.swift       Git worktree management for isolated shards
 DirectoryPicker.swift   Warp-style directory chooser overlay for new tabs
 CommandHistory.swift    Shell integration (ZDOTDIR injection) + OSC 7770 command logger
@@ -44,12 +44,12 @@ Crystl sends POST /decide --> bridge resolves the held connection
 - **Glass aesthetic**: All panels use `NSVisualEffectView` with `.hudWindow` material, `.darkAqua` appearance, `roundedMaskImage()` for corners
 - **Non-activating panels**: Floating notifications use `.nonactivatingPanel` + `.borderless` so they don't steal focus. Settings/input panels use `.titled` so they can accept keyboard input.
 - **Animation**: `animateLiquidCrystal()` in AppDelegate for panel open effects. `CATransition(type: "flip")` for settings flip. Tile pulse uses `CABasicAnimation` on border + scale.
-- **Tab ↔ Rail sync**: `TerminalWindowController` fires `onTabAdded/Removed/Selected/Updated` callbacks. `AppDelegate` wires these to `CrystalRailController` methods.
+- **Crystal ↔ Rail sync**: `TerminalWindowController` fires `onTabAdded/Removed/Selected/Updated` callbacks. `AppDelegate` wires these to `CrystalRailController` methods.
 - **Shell integration**: `ShellIntegration` overrides ZDOTDIR to inject zsh hooks that emit OSC 7770 sequences for command history tracking.
 
 ### Shards (Sub-tabs)
 
-Each project tab can have multiple **shards** — terminal sessions within the same project. Shards are named after crystals: diamond, aquamarine, sapphire, tanzanite, amethyst, emerald, peridot, citrine, carnelian, ruby. Each crystal has a signature color used for the shard label text and underline accent.
+Each **crystal** (project tab) can have multiple **shards** — terminal sessions within the same project. Shards are named after crystals: diamond, aquamarine, sapphire, tanzanite, amethyst, emerald, peridot, citrine, carnelian, ruby. Each crystal has a signature color used for the shard label text and underline accent.
 
 - Shards appear in the **shard bar** below the tab bar (visible when 2+ shards exist)
 - Click "+" to add a shared shard (same working directory)
@@ -162,11 +162,11 @@ Keep source files under **500 lines**. `TabBarView.swift`, `SettingsView.swift`,
 - **Temp files**: ZDOTDIR proxy files in `/tmp/crystl-shell-{pid}/` never cleaned up.
 - **DRY**: Glass panel construction repeated 3x in AppDelegate. `animateLiquidCrystal` duplicated between AppDelegate and TerminalWindow.
 
-### New Project Panel
+### New Crystal Panel
 
-The New Project panel (from rail "+" or "Project Settings" button) includes:
-- **Name** — project display name, saved to `.crystl/project.json`
-- **Path** — parent directory (editable for new, read-only for existing projects)
+The New Crystal panel (from rail "+" or "Crystal Settings" button) includes:
+- **Name** — crystal display name, saved to `.crystl/project.json`
+- **Path** — parent directory (editable for new, read-only for existing crystals)
 - **Initialize git** checkbox — runs `git init` on create (checked by default, hidden for existing)
 - **Remote URL** — auto-fills from base URL + project name, runs `git remote add origin`
 - **Color** / **Icon** pickers
@@ -175,7 +175,7 @@ The New Project panel (from rail "+" or "Project Settings" button) includes:
 
 ## Settings
 
-- `projectsDirectory` — base directory for new projects. Default: `~/Projects`.
+- `projectsDirectory` — base directory for new crystals. Default: `~/Projects`.
 - `gitRemoteBaseUrl` — base URL for git remotes (e.g. `git@github.com:user/`). Auto-fills remote field in New Project panel as `{baseUrl}{name}.git`.
 - Bridge port `19280` — hardcoded in AppDelegate and build.sh.
 - Shell prompt is not overridden — user's own zsh config applies.

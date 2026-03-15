@@ -363,7 +363,7 @@ extension TerminalWindowController {
         yR -= (20 + sectionToHeader)
 
         // ── Projects Directory ──
-        let projLabel = NSTextField(labelWithString: "DEFAULT PROJECTS DIRECTORY")
+        let projLabel = NSTextField(labelWithString: "DEFAULT CRYSTALS DIRECTORY")
         projLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
         projLabel.textColor = labelColor
         projLabel.frame = NSRect(x: rightX, y: yR, width: colWidth, height: labelH)
@@ -514,7 +514,7 @@ extension TerminalWindowController {
         docView.addSubview(starterTitle)
         yR -= (14 + 6)
 
-        let starterDesc = NSTextField(labelWithString: "Templates written to new projects")
+        let starterDesc = NSTextField(labelWithString: "Templates written to new crystals")
         starterDesc.font = NSFont.systemFont(ofSize: 10, weight: .regular)
         starterDesc.textColor = NSColor(white: 1.0, alpha: 0.5)
         starterDesc.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 14)
@@ -776,7 +776,7 @@ extension TerminalWindowController {
 
         let alert = NSAlert()
         alert.messageText = "Remove \(name)?"
-        alert.informativeText = "This removes the MCP server from all projects."
+        alert.informativeText = "This removes the MCP server from all crystals."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Remove")
         alert.addButton(withTitle: "Cancel")
@@ -798,7 +798,7 @@ extension TerminalWindowController {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Choose"
-        panel.message = "Select your projects directory"
+        panel.message = "Select your crystals directory"
 
         let currentDir = UserDefaults.standard.string(forKey: "projectsDirectory") ?? (NSHomeDirectory() + "/Projects")
         panel.directoryURL = URL(fileURLWithPath: currentDir)

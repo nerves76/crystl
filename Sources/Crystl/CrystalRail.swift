@@ -524,7 +524,7 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
         // Title + close button
         let titleH: CGFloat = 18
         y0 -= titleH
-        let label = NSTextField(labelWithString: "New Project")
+        let label = NSTextField(labelWithString: "New Crystal")
         label.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
         label.textColor = .white
         label.frame = NSRect(x: sidePad, y: y0, width: contentW - 24, height: titleH)
@@ -552,7 +552,7 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
 
         let fieldH: CGFloat = 28
         let field = PaddedTextField(frame: NSRect(x: sidePad, y: y0 - fieldH, width: contentW, height: fieldH))
-        field.placeholderString = "project-name"
+        field.placeholderString = "crystal-name"
         field.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
         field.textColor = .white
         field.drawsBackground = false
@@ -757,7 +757,7 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
 
         // ── Create button ──
         let createBtn = NSButton(frame: NSRect(x: sidePad, y: bottomPad, width: contentW, height: btnH))
-        createBtn.title = "Create Project"
+        createBtn.title = "Create Crystal"
         createBtn.bezelStyle = .rounded
         createBtn.isBordered = false
         createBtn.wantsLayer = true
