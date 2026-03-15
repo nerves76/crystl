@@ -429,7 +429,7 @@ class PaddedTextField: NSTextField {
 
 /// A floating glass input panel for creating a new project folder.
 /// Includes name field, icon picker grid, and color picker.
-class NewProjectPanel: NSObject {
+class NewProjectPanel: NSObject, NSTextFieldDelegate {
     private var panel: NSPanel?
     private var nameField: NSTextField?
     private var pathField: NSTextField?
@@ -437,7 +437,9 @@ class NewProjectPanel: NSObject {
     private var colorGrid: ColorGridView?
     private var mcpCheckboxes: [(name: String, checkbox: NSButton)] = []
     private var starterCheckboxes: [(id: UUID, checkbox: NSButton)] = []
-    var onSubmit: ((String, String, String?, String?, Set<String>, Set<UUID>) -> Void)?  // (name, path, iconName, colorHex, mcpServers, starterIds)
+    private var gitInitCheckbox: NSButton?
+    private var remoteField: NSTextField?
+    var onSubmit: ((String, String, String?, String?, Set<String>, Set<UUID>, Bool, String?) -> Void)?  // (name, path, iconName, colorHex, mcpServers, starterIds, gitInit, remote)
     var onDismiss: (() -> Void)?
 
     /// Computed panel height based on MCP/starter content.
@@ -452,7 +454,7 @@ class NewProjectPanel: NSObject {
         let checkboxH = starterHeaderH + CGFloat(starterRows) * cbItemH +
             mcpHeaderH + CGFloat(mcpRows) * cbItemH +
             ((starterRows + mcpRows > 0) ? 8 : 0)
-        return 528 + checkboxH  // 460 + 68 for PATH field
+        return 594 + checkboxH  // base + PATH + git init + remote field
     }
 
     func show(relativeTo railPanel: NSPanel) {
@@ -563,6 +565,7 @@ class NewProjectPanel: NSObject {
         field.layer?.masksToBounds = true
         field.target = self
         field.action = #selector(fieldSubmitted(_:))
+        field.delegate = self
         glass.addSubview(field)
         nameField = field
         y0 -= fieldH + 16  // controlH + gap
@@ -593,7 +596,39 @@ class NewProjectPanel: NSObject {
         pField.layer?.masksToBounds = true
         glass.addSubview(pField)
         pathField = pField
-        y0 -= fieldH + 20  // controlH + sectionBreak
+        y0 -= fieldH + 10
+
+        // ── Git init checkbox ──
+        let gitCb = NSButton(checkboxWithTitle: "Initialize git repository", target: nil, action: nil)
+        gitCb.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        gitCb.contentTintColor = NSColor(white: 1.0, alpha: 0.7)
+        let cbSize = gitCb.fittingSize
+        gitCb.frame = NSRect(x: sidePad, y: y0 - cbSize.height, width: contentW, height: cbSize.height)
+        gitCb.state = .on
+        glass.addSubview(gitCb)
+        gitInitCheckbox = gitCb
+        gitCb.target = self
+        gitCb.action = #selector(gitInitToggled(_:))
+        y0 -= cbSize.height + 8
+
+        // ── Remote field (shown when git init is checked) ──
+        let baseUrl = UserDefaults.standard.string(forKey: "gitRemoteBaseUrl") ?? ""
+        let rField = PaddedTextField(frame: NSRect(x: sidePad, y: y0 - fieldH, width: contentW, height: fieldH))
+        rField.placeholderString = "origin remote URL"
+        rField.stringValue = baseUrl.isEmpty ? "" : baseUrl  // will append project name on submit
+        rField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        rField.textColor = NSColor(white: 1.0, alpha: 0.7)
+        rField.drawsBackground = false
+        rField.isBordered = false
+        rField.isBezeled = false
+        rField.focusRingType = .none
+        rField.wantsLayer = true
+        rField.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.12).cgColor
+        rField.layer?.cornerRadius = 8
+        rField.layer?.masksToBounds = true
+        glass.addSubview(rField)
+        remoteField = rField
+        y0 -= fieldH + 10
 
         // ── Color section ──
         let colorLabel = NSTextField(labelWithString: "COLOR")
@@ -815,6 +850,18 @@ class NewProjectPanel: NSObject {
         iconGrid?.filterText = sender.stringValue
     }
 
+    @objc private func gitInitToggled(_ sender: NSButton) {
+        remoteField?.isHidden = sender.state == .off
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField, field === nameField else { return }
+        let baseUrl = UserDefaults.standard.string(forKey: "gitRemoteBaseUrl") ?? ""
+        guard !baseUrl.isEmpty else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        remoteField?.stringValue = name.isEmpty ? baseUrl : baseUrl + name + ".git"
+    }
+
     private func makeCheckbox(_ title: String, checked: Bool, width: CGFloat) -> NSButton {
         let cb = NSButton(checkboxWithTitle: title, target: nil, action: nil)
         cb.state = checked ? .on : .off
@@ -852,14 +899,21 @@ class NewProjectPanel: NSObject {
         let name = nameField?.stringValue.trimmingCharacters(in: .whitespaces) ?? ""
         guard !name.isEmpty else { return }
 
-        // Resolve path — expand ~ and use as parent directory
-        var parentDir = pathField?.stringValue.trimmingCharacters(in: .whitespaces) ?? ""
-        if parentDir.isEmpty {
-            parentDir = UserDefaults.standard.string(forKey: "projectsDirectory")
-                ?? (NSHomeDirectory() + "/Projects")
+        // Resolve path
+        let fullPath: String
+        if pathField?.isEditable == false {
+            // Existing project — path field contains the full project path
+            fullPath = ((pathField?.stringValue ?? "") as NSString).expandingTildeInPath
+        } else {
+            // New project — path field is parent directory, append name
+            var parentDir = pathField?.stringValue.trimmingCharacters(in: .whitespaces) ?? ""
+            if parentDir.isEmpty {
+                parentDir = UserDefaults.standard.string(forKey: "projectsDirectory")
+                    ?? (NSHomeDirectory() + "/Projects")
+            }
+            parentDir = (parentDir as NSString).expandingTildeInPath
+            fullPath = parentDir + "/" + name
         }
-        parentDir = (parentDir as NSString).expandingTildeInPath
-        let fullPath = parentDir + "/" + name
 
         let iconName = iconGrid?.selectedIcon
         let colorHex = colorGrid?.selectedColor.hexString
@@ -871,7 +925,10 @@ class NewProjectPanel: NSObject {
         for (id, cb) in starterCheckboxes {
             if cb.state == .on { selectedStarters.insert(id) }
         }
-        onSubmit?(name, fullPath, iconName, colorHex, selectedMcps, selectedStarters)
+        let gitInit = gitInitCheckbox?.state == .on
+        let remote = remoteField?.stringValue.trimmingCharacters(in: .whitespaces)
+        let remoteUrl = (remote?.isEmpty ?? true) ? nil : remote
+        onSubmit?(name, fullPath, iconName, colorHex, selectedMcps, selectedStarters, gitInit, remoteUrl)
         dismiss()
     }
 
@@ -879,15 +936,38 @@ class NewProjectPanel: NSObject {
     func populate(name: String, path: String, iconName: String?, color: NSColor?) {
         nameField?.stringValue = name
         if let pathField = pathField {
-            let display = ((path as NSString).deletingLastPathComponent as NSString).abbreviatingWithTildeInPath
-            pathField.stringValue = display
+            pathField.stringValue = (path as NSString).abbreviatingWithTildeInPath
+            pathField.isEditable = false
+            pathField.textColor = NSColor(white: 1.0, alpha: 0.4)
         }
+        gitInitCheckbox?.isHidden = true
+        remoteField?.isHidden = true
         if let icon = iconName { iconGrid?.selectIcon(icon) }
         if let c = color {
             colorGrid?.selectedColor = c
             colorGrid?.needsDisplay = true
             iconGrid?.selectedColor = c
             iconGrid?.needsDisplay = true
+        }
+
+        let fm = FileManager.default
+
+        // Pre-check starters whose files already exist in the project
+        for (id, cb) in starterCheckboxes {
+            if let starter = StarterManager.shared.starters.first(where: { $0.id == id }) {
+                let filePath = path + "/" + starter.filename
+                cb.state = fm.fileExists(atPath: filePath) ? .on : .off
+            }
+        }
+
+        // Pre-check MCP servers already in .mcp.json
+        let mcpPath = path + "/.mcp.json"
+        if let data = fm.contents(atPath: mcpPath),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let existingServers = json["mcpServers"] as? [String: Any] {
+            for (serverName, cb) in mcpCheckboxes {
+                cb.state = existingServers[serverName] != nil ? .on : .off
+            }
         }
     }
 
@@ -980,7 +1060,7 @@ class CrystalRailController {
     var onTileClicked: ((UUID) -> Void)?
     var onFolderDropped: ((String) -> Void)?
     var onAddClicked: (() -> Void)?
-    var onNewProject: ((String, String, String?, String?, Set<String>, Set<UUID>) -> Void)?  // (name, path, iconName, colorHex, mcpServers, starterIds)
+    var onNewProject: ((String, String, String?, String?, Set<String>, Set<UUID>, Bool, String?) -> Void)?  // (name, path, iconName, colorHex, mcpServers, starterIds, gitInit, remote)
     var onChangeIcon: ((UUID) -> Void)?
     var onSettingsIconClicked: ((NSView) -> Void)?
     var newProjectPanel = NewProjectPanel()
@@ -1080,8 +1160,8 @@ class CrystalRailController {
         addBtn.onClick = { [weak self] in
             self?.showNewProjectPanel()
         }
-        newProjectPanel.onSubmit = { [weak self] name, path, iconName, colorHex, mcpServers, starterIds in
-            self?.onNewProject?(name, path, iconName, colorHex, mcpServers, starterIds)
+        newProjectPanel.onSubmit = { [weak self] name, path, iconName, colorHex, mcpServers, starterIds, gitInit, remote in
+            self?.onNewProject?(name, path, iconName, colorHex, mcpServers, starterIds, gitInit, remote)
         }
         glass.addSubview(addBtn)
         addButton = addBtn

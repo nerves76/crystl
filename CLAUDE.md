@@ -16,10 +16,17 @@ killall Crystl; open ~/Applications/Crystl.app  # restart after install
 ```
 main.swift              Entry point, NSApplication setup, main menu
 AppDelegate.swift       App lifecycle, bridge polling, approval/notification panels
-TerminalWindow.swift    Window, tab bar, tab management, settings flip, terminal config
+TerminalWindow.swift    Window, tab bar, tab/shard management, settings flip, terminal config
+TerminalSession.swift   TerminalSession (shard), ProjectTab, InsetFrostView, GlowButton, TerminalDropView
+TabBarView.swift        TabBarView (project tabs) + SessionBarView (shard bar)
 CrystalRail.swift       Screen-edge glass rail: tiles, add button, new project panel
+GitWorktree.swift       Git worktree management for isolated shards
 DirectoryPicker.swift   Warp-style directory chooser overlay for new tabs
 CommandHistory.swift    Shell integration (ZDOTDIR injection) + OSC 7770 command logger
+SettingsView.swift      Settings panel, StarterEditorPanel
+ProjectConfig.swift     Per-project config (.crystl/project.json): name, icon, color
+MCPConfig.swift         MCP server catalog management
+StarterManager.swift    Starter file templates (~/.config/crystl/starters.json)
 Models.swift            JSON data types for bridge communication
 Helpers.swift           Shared utilities: colors, mask images, session color map
 ```
@@ -40,13 +47,56 @@ Crystl sends POST /decide --> bridge resolves the held connection
 - **Tab ↔ Rail sync**: `TerminalWindowController` fires `onTabAdded/Removed/Selected/Updated` callbacks. `AppDelegate` wires these to `CrystalRailController` methods.
 - **Shell integration**: `ShellIntegration` overrides ZDOTDIR to inject zsh hooks that emit OSC 7770 sequences for command history tracking.
 
+### Shards (Sub-tabs)
+
+Each project tab can have multiple **shards** — terminal sessions within the same project. Shards are named after crystals: diamond, aquamarine, sapphire, tanzanite, amethyst, emerald, peridot, citrine, carnelian, ruby. Each crystal has a signature color used for the shard label text and underline accent.
+
+- Shards appear in the **shard bar** below the tab bar (visible when 2+ shards exist)
+- Click "+" to add a shared shard (same working directory)
+- **Option+click "+"** to add an **isolated shard** backed by a git worktree
+
+### Isolated Shards (Git Worktrees)
+
+Isolated shards let multiple agents work on the same project without conflicts. Each isolated shard gets its own git worktree — a full working copy on a separate branch.
+
+```
+Project: ~/Projects/myapp (main branch)
+├── diamond     — main working directory (shared)
+├── ⎇ aquamarine — .crystl/worktrees/aquamarine (branch: crystl/aquamarine)
+└── ⎇ sapphire  — .crystl/worktrees/sapphire   (branch: crystl/sapphire)
+```
+
+**How it works:**
+- `GitWorktree.create()` runs `git worktree add -b crystl/{name} .crystl/worktrees/{name}`
+- Untracked config files are symlinked into the worktree: `CLAUDE.md`, `AGENTS.md`, `.mcp.json`, `.claude/`
+- The shard bar shows a `⎇` prefix on isolated shards
+- The shell starts `cd`'d into the worktree path
+
+**On close:**
+- If the branch has no unique commits → worktree and branch are both removed
+- If commits exist → worktree is removed but **branch is kept** (work preserved)
+- `cleanupWorktree()` is called from both `closeSession()` and `closeProject()`
+
+**Error handling:**
+- Not a git repo → red error in terminal, no shard created
+- Worktree creation failed → yellow warning, falls back to shared shard
+- Success → cyan message showing branch name
+
+**Safety:**
+- `.crystl/` is gitignored — worktrees don't appear in `git status`
+- Stale worktrees are force-cleaned before reuse
+- Non-git projects get a normal shard (no worktree)
+- Starter files skip existing files (no overwrites)
+- MCP `.mcp.json` merges with existing config (preserves manual servers)
+- ProjectConfig merges on save (name/icon/color don't clobber each other)
+
 ## File Size Limits
 
-Keep source files under **500 lines**. Current violations to address:
+Keep source files under **500 lines**. `TabBarView.swift`, `SettingsView.swift`, `TerminalSession.swift` have been split out. Remaining violations:
 
-- `TerminalWindow.swift` (1,219 lines) — split out: `TerminalTab.swift`, `TabBarView.swift`, `SettingsView.swift`
-- `AppDelegate.swift` (859 lines) — split out: `ApprovalPanel.swift`, shared animation code
-- `CrystalRail.swift` (702 lines) — acceptable for now, tightly coupled classes
+- `TerminalWindow.swift` — split out: terminal config/appearance helpers
+- `AppDelegate.swift` — split out: `ApprovalPanel.swift`, shared animation code
+- `CrystalRail.swift` — acceptable for now, tightly coupled classes
 
 ## Code Conventions
 
@@ -112,9 +162,21 @@ Keep source files under **500 lines**. Current violations to address:
 - **Temp files**: ZDOTDIR proxy files in `/tmp/crystl-shell-{pid}/` never cleaned up.
 - **DRY**: Glass panel construction repeated 3x in AppDelegate. `animateLiquidCrystal` duplicated between AppDelegate and TerminalWindow.
 
+### New Project Panel
+
+The New Project panel (from rail "+" or "Project Settings" button) includes:
+- **Name** — project display name, saved to `.crystl/project.json`
+- **Path** — parent directory (editable for new, read-only for existing projects)
+- **Initialize git** checkbox — runs `git init` on create (checked by default, hidden for existing)
+- **Remote URL** — auto-fills from base URL + project name, runs `git remote add origin`
+- **Color** / **Icon** pickers
+- **MCP servers** — checkboxes from catalog, merged into `.mcp.json`
+- **Starter files** — checkboxes from templates, skip existing files
+
 ## Settings
 
-- `projectsDirectory` — UserDefaults key for the base directory used by DirectoryPicker and NewProjectPanel. Default: `~/Projects`.
+- `projectsDirectory` — base directory for new projects. Default: `~/Projects`.
+- `gitRemoteBaseUrl` — base URL for git remotes (e.g. `git@github.com:user/`). Auto-fills remote field in New Project panel as `{baseUrl}{name}.git`.
 - Bridge port `19280` — hardcoded in AppDelegate and build.sh.
 - Shell prompt is not overridden — user's own zsh config applies.
 

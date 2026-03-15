@@ -42,20 +42,17 @@ class HoverLabel {
 // ── Tab Bar View ──
 
 /// Custom-drawn tab bar showing project directories. Tabs auto-size to fill
-/// available width (max 160px each). Double-click to rename, "+" to add.
-class TabBarView: NSView, NSTextFieldDelegate {
+/// available width (max 160px each). "+" to add, click to select.
+class TabBarView: NSView {
     var projects: [ProjectTab] = []
     var selectedIndex: Int = 0
     var onSelectTab: ((Int) -> Void)?
     var onAddTab: (() -> Void)?
     var onCloseTab: ((Int) -> Void)?
-    var onRenameTab: ((Int, String) -> Void)?
     private let leftInset: CGFloat = 14
     private let hoverLabel = HoverLabel()
     private var hoverTrackingArea: NSTrackingArea?
     private let tabSpacing: CGFloat = 2
-    private var editField: NSTextField?
-    private var editingIndex: Int = -1
 
     private func computeTabWidth() -> CGFloat {
         let available = bounds.width - leftInset - 20
@@ -85,29 +82,27 @@ class TabBarView: NSView, NSTextFieldDelegate {
                 NSBezierPath(roundedRect: rect, xRadius: 6, yRadius: 6).fill()
             }
 
-            // Icon + Title (skip if editing this tab)
-            if i != editingIndex {
-                var textX = x + 12
-                let iconSize: CGFloat = 14
+            // Icon + Title
+            var textX = x + 12
+            let iconSize: CGFloat = 14
 
-                // Draw project icon if available
-                if let iconName = project.iconName,
-                   let icon = LucideIcons.render(name: iconName, size: iconSize, color: project.color.withAlphaComponent(isSelected ? 0.9 : 0.5)) {
-                    let iconY = rect.midY - iconSize / 2
-                    icon.draw(in: NSRect(x: textX, y: iconY, width: iconSize, height: iconSize))
-                    textX += iconSize + 5
-                }
-
-                let title = project.title as NSString
-                let attrs: [NSAttributedString.Key: Any] = [
-                    .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: isSelected ? .medium : .regular),
-                    .foregroundColor: NSColor.white
-                ]
-                let sz = title.size(withAttributes: attrs)
-                let textW = (x + tabW) - textX - (projects.count > 1 ? 20 : 12)
-                let textRect = NSRect(x: textX, y: rect.midY - sz.height / 2, width: textW, height: sz.height)
-                title.draw(with: textRect, options: [.truncatesLastVisibleLine, .usesLineFragmentOrigin], attributes: attrs)
+            // Draw project icon if available
+            if let iconName = project.iconName,
+               let icon = LucideIcons.render(name: iconName, size: iconSize, color: project.color.withAlphaComponent(isSelected ? 0.9 : 0.5)) {
+                let iconY = rect.midY - iconSize / 2
+                icon.draw(in: NSRect(x: textX, y: iconY, width: iconSize, height: iconSize))
+                textX += iconSize + 5
             }
+
+            let title = project.title as NSString
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.monospacedSystemFont(ofSize: 11.5, weight: isSelected ? .medium : .regular),
+                .foregroundColor: NSColor.white
+            ]
+            let sz = title.size(withAttributes: attrs)
+            let textW = (x + tabW) - textX - (projects.count > 1 ? 20 : 12)
+            let textRect = NSRect(x: textX, y: rect.midY - sz.height / 2, width: textW, height: sz.height)
+            title.draw(with: textRect, options: [.truncatesLastVisibleLine, .usesLineFragmentOrigin], attributes: attrs)
 
             // Close button (only when multiple projects)
             if projects.count > 1 {
@@ -137,17 +132,6 @@ class TabBarView: NSView, NSTextFieldDelegate {
     override func mouseDown(with event: NSEvent) {
         let loc = convert(event.locationInWindow, from: nil)
         let tabW = computeTabWidth()
-
-        // Double-click to rename
-        if event.clickCount == 2 {
-            for i in 0..<projects.count {
-                let x = tabOriginX(i)
-                if loc.x >= x && loc.x < x + tabW {
-                    beginEditing(index: i)
-                    return
-                }
-            }
-        }
 
         // "+" button
         let plusX = tabOriginX(projects.count) + 8
@@ -189,58 +173,6 @@ class TabBarView: NSView, NSTextFieldDelegate {
         hoverLabel.hide()
     }
 
-    func beginEditing(index: Int) {
-        endEditing()
-        editingIndex = index
-        let tabW = computeTabWidth()
-        let x = tabOriginX(index)
-        let h: CGFloat = 26
-        let y: CGFloat = (bounds.height - h) / 2
-
-        let field = NSTextField(frame: NSRect(x: x + 8, y: y + 2, width: tabW - 20, height: h - 4))
-        field.stringValue = projects[index].title
-        field.font = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .medium)
-        field.textColor = .white
-        field.backgroundColor = .clear
-        field.isBordered = false
-        field.isBezeled = false
-        field.focusRingType = .none
-        field.drawsBackground = false
-        field.cell?.isScrollable = true
-        field.cell?.wraps = false
-        field.delegate = self
-        field.target = self
-        field.action = #selector(editFieldCommit)
-        addSubview(field)
-        field.selectText(nil)
-        window?.makeFirstResponder(field)
-        editField = field
-    }
-
-    @objc func editFieldCommit() {
-        endEditing()
-    }
-
-    func endEditing() {
-        guard let field = editField, editingIndex >= 0, editingIndex < projects.count else {
-            editField?.removeFromSuperview()
-            editField = nil
-            editingIndex = -1
-            return
-        }
-        let newTitle = field.stringValue.trimmingCharacters(in: .whitespaces)
-        if !newTitle.isEmpty {
-            onRenameTab?(editingIndex, newTitle)
-        }
-        field.removeFromSuperview()
-        editField = nil
-        editingIndex = -1
-        needsDisplay = true
-    }
-
-    func controlTextDidEndEditing(_ obj: Notification) {
-        endEditing()
-    }
 }
 
 // ── Session Bar View ──
@@ -255,22 +187,23 @@ class SessionBarView: NSView, NSTextFieldDelegate {
     private let hoverLabel = HoverLabel()
     private var hoverTrackingArea: NSTrackingArea?
     var onAddSession: (() -> Void)?
+    var onAddIsolatedSession: (() -> Void)?
     var onRenameSession: ((Int, String) -> Void)?
     var onCloseSession: ((Int) -> Void)?
     private let headerInset: CGFloat = 14
-    private let leftInset: CGFloat = 85  // after "SESSIONS" label
+    private let leftInset: CGFloat = 85  // after "SHARDS" label
     private let pillSpacing: CGFloat = 4
     private let pillWidth: CGFloat = 64
     private var editField: NSTextField?
     private var editingIndex: Int = -1
 
     override func draw(_ dirtyRect: NSRect) {
-        // "SESSIONS" header label — left of the session pills
+        // "SHARDS" header label — left of the session pills
         let headerAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 9, weight: .medium),
             .foregroundColor: NSColor(white: 1.0, alpha: 0.4)
         ]
-        let header = "SESSIONS" as NSString
+        let header = "SHARDS" as NSString
         let headerSize = header.size(withAttributes: headerAttrs)
         header.draw(at: NSPoint(x: headerInset,
                                 y: (bounds.height - headerSize.height) / 2),
@@ -284,18 +217,22 @@ class SessionBarView: NSView, NSTextFieldDelegate {
             let rect = NSRect(x: x, y: y, width: pillWidth, height: h)
             let isSelected = (i == selectedIndex)
 
+            let gemColor = session.crystalColor
+
             if isSelected {
-                // Color accent underline only
-                projectColor.withAlphaComponent(0.6).setFill()
+                // Crystal color accent underline
+                gemColor.withAlphaComponent(0.6).setFill()
                 NSBezierPath.fill(NSRect(x: x + 8, y: y, width: pillWidth - 16, height: 2))
             }
 
             // Session name (skip if editing)
             if i != editingIndex {
-                let name = session.name as NSString
+                let displayName = (session.isIsolated ? "\u{2387} " : "") + session.name
+                let name = displayName as NSString
+                let textColor = isSelected ? gemColor : gemColor.withAlphaComponent(0.5)
                 let attrs: [NSAttributedString.Key: Any] = [
                     .font: NSFont.monospacedSystemFont(ofSize: 10.5, weight: isSelected ? .medium : .regular),
-                    .foregroundColor: NSColor.white.withAlphaComponent(isSelected ? 1.0 : 0.6)
+                    .foregroundColor: textColor
                 ]
                 let sz = name.size(withAttributes: attrs)
                 let textRect = NSRect(x: x + 8, y: rect.midY - sz.height / 2, width: pillWidth - 16, height: sz.height)
@@ -312,6 +249,20 @@ class SessionBarView: NSView, NSTextFieldDelegate {
         let plusStr = "+" as NSString
         let plusSize = plusStr.size(withAttributes: plusAttrs)
         plusStr.draw(at: NSPoint(x: plusX, y: (bounds.height - plusSize.height) / 2), withAttributes: plusAttrs)
+
+        // Hint — right-aligned, hidden when shards would overlap
+        let hint = "\u{2325}+ isolated shard" as NSString
+        let hintAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 9, weight: .regular),
+            .foregroundColor: NSColor(white: 1.0, alpha: 0.2)
+        ]
+        let hintSize = hint.size(withAttributes: hintAttrs)
+        let hintX = bounds.width - hintSize.width - 14
+        let contentRight = plusX + plusSize.width + 12
+        if hintX > contentRight {
+            hint.draw(at: NSPoint(x: hintX, y: (bounds.height - hintSize.height) / 2),
+                      withAttributes: hintAttrs)
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -328,10 +279,14 @@ class SessionBarView: NSView, NSTextFieldDelegate {
             }
         }
 
-        // "+" button
+        // "+" button — Option+click for isolated (worktree) session
         let plusX = leftInset + CGFloat(sessions.count) * (pillWidth + pillSpacing) + 4
         if loc.x >= plusX - 4 && loc.x <= plusX + 24 {
-            onAddSession?()
+            if event.modifierFlags.contains(.option) {
+                onAddIsolatedSession?()
+            } else {
+                onAddSession?()
+            }
             return
         }
 

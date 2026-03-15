@@ -246,21 +246,51 @@ class TerminalDropView: NSView {
 
 // ── Terminal Session ──
 
-/// Default session names: "one", "two", "three", etc.
-let sessionNames = ["one", "two", "three", "four", "five", "six", "seven", "eight"]
+/// Session crystal names and their gem colors.
+let sessionCrystals: [(name: String, color: (r: CGFloat, g: CGFloat, b: CGFloat))] = [
+    ("diamond",    (0.73, 0.84, 0.93)),  // icy blue-white
+    ("aquamarine", (0.50, 0.86, 0.84)),  // sea green
+    ("sapphire",   (0.36, 0.48, 0.85)),  // deep blue
+    ("tanzanite",  (0.55, 0.42, 0.78)),  // violet-blue
+    ("amethyst",   (0.68, 0.44, 0.72)),  // purple
+    ("emerald",    (0.31, 0.78, 0.47)),  // green
+    ("peridot",    (0.68, 0.82, 0.31)),  // yellow-green
+    ("citrine",    (0.90, 0.78, 0.30)),  // golden
+    ("carnelian",  (0.85, 0.45, 0.28)),  // red-orange
+    ("ruby",       (0.82, 0.22, 0.32)),  // red
+    ("garnet",     (0.70, 0.15, 0.22)),  // deep red
+    ("topaz",      (0.95, 0.65, 0.25)),  // amber
+    ("opal",       (0.80, 0.72, 0.85)),  // iridescent lavender
+    ("jade",       (0.40, 0.70, 0.45)),  // muted green
+    ("onyx",       (0.60, 0.60, 0.65)),  // dark grey
+    ("quartz",     (0.88, 0.75, 0.80)),  // rose pink
+    ("turquoise",  (0.30, 0.78, 0.76)),  // teal
+    ("lapis",      (0.25, 0.35, 0.72)),  // deep blue
+    ("morganite",  (0.90, 0.68, 0.68)),  // peach pink
+    ("zircon",     (0.55, 0.75, 0.88)),  // sky blue
+]
 
 /// A single terminal shell instance with metadata.
 /// Sessions live inside a ProjectTab and share the project's color.
 class TerminalSession {
     let id = UUID()
     let terminalView: LocalProcessTerminalView
-    var name: String = "one"
+    var name: String = "diamond"
     var hasCustomName: Bool = false
+    var crystalColor: NSColor = .white
     var cwd: String
     var historyLogger: CommandHistoryLogger?
     var detectedAgent: AgentKind = .none
 
-    init(name: String = "one", cwd: String = NSHomeDirectory(), frame: NSRect = NSRect(x: 0, y: 0, width: 900, height: 536)) {
+    /// If non-nil, this session runs in an isolated git worktree at this path.
+    var worktreePath: String?
+    /// The original project directory (used to clean up the worktree on close).
+    var worktreeProjectDir: String?
+
+    /// True if this session is running in a git worktree.
+    var isIsolated: Bool { worktreePath != nil }
+
+    init(name: String = "diamond", cwd: String = NSHomeDirectory(), frame: NSRect = NSRect(x: 0, y: 0, width: 900, height: 536)) {
         self.name = name
         self.cwd = cwd
         self.terminalView = LocalProcessTerminalView(frame: frame)
@@ -277,6 +307,14 @@ class TerminalSession {
         let logger = CommandHistoryLogger(terminalView: terminalView)
         logger.registerHandler()
         historyLogger = logger
+    }
+
+    /// Cleans up the git worktree when this session closes.
+    func cleanupWorktree() {
+        guard let projectDir = worktreeProjectDir, let _ = worktreePath else { return }
+        GitWorktree.remove(projectDir: projectDir, crystalName: name)
+        worktreePath = nil
+        worktreeProjectDir = nil
     }
 }
 
@@ -305,8 +343,9 @@ class ProjectTab {
         self.color = color
         self.title = (directory as NSString).lastPathComponent
 
-        // Load icon and color from project config if available
+        // Load project config if available
         if let config = ProjectConfig.load(from: directory) {
+            if let name = config.name { self.title = name; self.hasCustomTitle = true }
             self.iconName = config.icon
             if let hex = config.color, let c = NSColor(hex: hex) {
                 self.color = c
@@ -314,12 +353,52 @@ class ProjectTab {
         }
     }
 
-    /// Adds a new session with the next sequential name.
-    func addSession(frame: NSRect = NSRect(x: 0, y: 0, width: 900, height: 536)) -> TerminalSession {
-        let nameIdx = sessions.count
-        let name = nameIdx < sessionNames.count ? sessionNames[nameIdx] : "\(nameIdx + 1)"
-        let session = TerminalSession(name: name, cwd: directory, frame: frame)
+    enum AddSessionResult {
+        case created(TerminalSession)
+        case notGitRepo
+        case worktreeFailed(TerminalSession)  // fell back to shared shard
+
+        /// The session, if one was created.
+        var session: TerminalSession? {
+            switch self {
+            case .created(let s), .worktreeFailed(let s): return s
+            case .notGitRepo: return nil
+            }
+        }
+    }
+
+    /// Adds a new session with the next crystal name and color.
+    /// If `isolated` is true and the project is a git repo, creates a worktree.
+    func addSession(frame: NSRect = NSRect(x: 0, y: 0, width: 900, height: 536), isolated: Bool = false) -> AddSessionResult {
+        let idx = sessions.count
+        let crystal = idx < sessionCrystals.count ? sessionCrystals[idx] : nil
+        let name = crystal?.name ?? "\(idx + 1)"
+
+        var sessionCwd = directory
+        var worktreePath: String?
+        var worktreeFailed = false
+
+        if isolated {
+            if !GitWorktree.isGitRepo(directory) {
+                return .notGitRepo
+            }
+            if let wtPath = GitWorktree.create(projectDir: directory, crystalName: name) {
+                sessionCwd = wtPath
+                worktreePath = wtPath
+            } else {
+                worktreeFailed = true
+            }
+        }
+
+        let session = TerminalSession(name: name, cwd: sessionCwd, frame: frame)
+        if let c = crystal {
+            session.crystalColor = NSColor(red: c.color.r, green: c.color.g, blue: c.color.b, alpha: 1.0)
+        }
+        if let wt = worktreePath {
+            session.worktreePath = wt
+            session.worktreeProjectDir = directory
+        }
         sessions.append(session)
-        return session
+        return worktreeFailed ? .worktreeFailed(session) : .created(session)
     }
 }

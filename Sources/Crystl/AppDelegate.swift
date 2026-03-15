@@ -123,9 +123,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.terminalController.window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
-        r.onNewProject = { [weak self] name, path, iconName, colorHex, mcpServers, starterIds in
+        r.onNewProject = { [weak self] name, path, iconName, colorHex, mcpServers, starterIds, gitInit, remote in
             self?.createAndOpenProject(name: name, path: path, iconName: iconName, colorHex: colorHex,
-                                       mcpServers: mcpServers, starterIds: starterIds)
+                                       mcpServers: mcpServers, starterIds: starterIds, gitInit: gitInit, remote: remote)
         }
         r.onChangeIcon = { [weak self] tabId in
             self?.showIconPicker(for: tabId)
@@ -229,7 +229,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Creates a new project folder and opens it in a new tab.
     func createAndOpenProject(name: String, path: String? = nil, iconName: String? = nil, colorHex: String? = nil,
-                              mcpServers: Set<String> = [], starterIds: Set<UUID> = []) {
+                              mcpServers: Set<String> = [], starterIds: Set<UUID> = [], gitInit: Bool = false, remote: String? = nil) {
         let projectPath = path ?? (projectsDirectory + "/" + name)
         let fm = FileManager.default
 
@@ -245,13 +245,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        // Save project config with icon and color
-        if iconName != nil || colorHex != nil {
-            var config = ProjectConfig()
-            config.icon = iconName
-            config.color = colorHex
-            config.save(to: projectPath)
+        // Initialize git repository if requested
+        if gitInit && !GitWorktree.isGitRepo(projectPath) {
+            runGit(["init", projectPath])
+            if let remote = remote, !remote.isEmpty {
+                runGit(["-C", projectPath, "remote", "add", "origin", remote])
+            }
         }
+
+        // Save project config
+        var config = ProjectConfig.load(from: projectPath) ?? ProjectConfig()
+        config.name = name
+        config.icon = iconName
+        config.color = colorHex
+        config.save(to: projectPath)
 
         // Write defaults based on user's choices in new project panel
         if !mcpServers.isEmpty {
@@ -1276,7 +1283,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let project = tc.selectedProject
         let panel = NewProjectPanel()
 
-        panel.onSubmit = { [weak self, weak tc] name, projectPath, iconName, colorHex, mcpServers, starterIds in
+        panel.onSubmit = { [weak self, weak tc] name, projectPath, iconName, colorHex, mcpServers, starterIds, gitInit, remote in
             guard let self = self, let tc = tc else { return }
 
             let fm = FileManager.default
@@ -1286,8 +1293,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             try? fm.createDirectory(atPath: parentDir, withIntermediateDirectories: true)
             try? fm.createDirectory(atPath: projectPath, withIntermediateDirectories: true)
 
-            // Save project config
-            var config = ProjectConfig()
+            // Initialize git repository if requested
+            if gitInit && !GitWorktree.isGitRepo(projectPath) {
+                self.runGit(["init", projectPath])
+                if let remote = remote, !remote.isEmpty {
+                    self.runGit(["-C", projectPath, "remote", "add", "origin", remote])
+                }
+            }
+
+            // Save project config (merge with existing)
+            var config = ProjectConfig.load(from: projectPath) ?? ProjectConfig()
+            config.name = name
             config.icon = iconName
             config.color = colorHex
             config.save(to: projectPath)
@@ -1326,6 +1342,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         setupPanel = panel
+    }
+
+    // MARK: - Git Helpers
+
+    private func runGit(_ args: [String]) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = args
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try? process.run()
+        process.waitUntilExit()
     }
 
     // MARK: - Menu Actions

@@ -43,6 +43,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
     private weak var glassView: NSVisualEffectView?
     private weak var backingView: NSView?
     private var setupButton: NSButton?
+    private weak var statusBar: NSView?
 
     // Starter files — tracks which starter is being edited in settings
     var editingStarterId: UUID?
@@ -132,7 +133,6 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         tabBar.onSelectTab = { [weak self] idx in self?.selectProject(idx) }
         tabBar.onAddTab = { [weak self] in self?.addProject() }
         tabBar.onCloseTab = { [weak self] idx in self?.closeProject(idx) }
-        tabBar.onRenameTab = { [weak self] idx, name in self?.renameProject(idx, name: name) }
         container.addSubview(tabBar)
 
         // Session bar — below tab bar with a small gap
@@ -143,6 +143,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         // Session bar always visible — shows current session(s) and "+" to add more
         sessionBar.onSelectSession = { [weak self] idx in self?.selectSession(idx) }
         sessionBar.onAddSession = { [weak self] in self?.addSessionToCurrentProject() }
+        sessionBar.onAddIsolatedSession = { [weak self] in self?.addSessionToCurrentProject(isolated: true) }
         sessionBar.onRenameSession = { [weak self] idx, name in self?.renameSession(idx, name: name) }
         container.addSubview(sessionBar)
 
@@ -205,6 +206,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         let statusBar = NSView(frame: NSRect(x: 0, y: 0, width: windowWidth, height: statusBarHeight))
         statusBar.autoresizingMask = [.width, .maxYMargin]
         container.addSubview(statusBar)
+        self.statusBar = statusBar
 
         let labelFont = NSFont.systemFont(ofSize: 9, weight: .medium)
         let labelColor = NSColor(white: 1.0, alpha: 0.6)
@@ -336,7 +338,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
     func addProject(cwd: String = NSHomeDirectory()) {
         let project = ProjectTab(directory: cwd, color: nextColor())
         if cwd == NSHomeDirectory() { project.isUnconfigured = true }
-        let session = project.addSession(frame: contentArea.bounds)
+        guard let session = project.addSession(frame: contentArea.bounds).session else { return }
         session.terminalView.processDelegate = self
         projects.append(project)
 
@@ -360,6 +362,8 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
     // MARK: - Project Settings Button
 
     func updateSetupButton() {
+        guard let bar = statusBar else { return }
+
         if setupButton == nil {
             let btn = NSButton(frame: .zero)
             btn.bezelStyle = .rounded
@@ -371,19 +375,19 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
             btn.contentTintColor = NSColor(white: 1.0, alpha: 0.5)
             btn.target = self
             btn.action = #selector(setupProjectClicked)
-            contentArea.addSubview(btn)
+            bar.addSubview(btn)
             setupButton = btn
         }
 
-        let isNew = selectedProject?.isUnconfigured == true
-        setupButton?.title = isNew ? "  +  Set Up Project" : "  ⚙  Project Settings"
-        let btnW: CGFloat = isNew ? 160 : 150
-        let btnH: CGFloat = 24
+        setupButton?.title = "Project Settings"
+        let btnW: CGFloat = 110
+        let btnH: CGFloat = 20
         setupButton?.frame = NSRect(
-            x: contentArea.bounds.width - btnW - 8,
-            y: 8,
+            x: bar.bounds.width - btnW - 16,
+            y: 18,  // aligned with projectLabel y:20
             width: btnW, height: btnH
         )
+        setupButton?.autoresizingMask = [.minXMargin]
     }
 
     @objc func setupProjectClicked() {
@@ -424,11 +428,32 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
 
     // MARK: - Session Management
 
-    func addSessionToCurrentProject() {
+    func addSessionToCurrentProject(isolated: Bool = false) {
         guard let project = selectedProject else { return }
-        let session = project.addSession(frame: contentArea.bounds)
-        session.terminalView.processDelegate = self
+        let result = project.addSession(frame: contentArea.bounds, isolated: isolated)
 
+        let session: TerminalSession
+        switch result {
+        case .notGitRepo:
+            showShardError("Not a git repository — isolated shards require git.")
+            return
+        case .worktreeFailed(let s):
+            session = s
+            // Show warning after terminal starts
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak s] in
+                s?.terminalView.feed(text: "\r\n\u{001B}[33m⚠ Worktree creation failed — opened as shared shard instead.\u{001B}[0m\r\n")
+            }
+        case .created(let s):
+            session = s
+            if isolated {
+                let branch = GitWorktree.branchName(for: session.cwd) ?? "crystl/\(session.name)"
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak s] in
+                    s?.terminalView.feed(text: "\r\n\u{001B}[36m⎇ Isolated shard on branch: \(branch)\u{001B}[0m\r\n")
+                }
+            }
+        }
+
+        session.terminalView.processDelegate = self
         configureTerminalAppearance(session.terminalView, sessionId: session.id)
 
         session.terminalView.frame = contentArea.bounds
@@ -443,6 +468,11 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
             session.start()
             self?.hideScroller(in: session.terminalView, sessionId: session.id)
         }
+    }
+
+    private func showShardError(_ message: String) {
+        guard let session = selectedProject?.selectedSession else { return }
+        session.terminalView.feed(text: "\r\n\u{001B}[31m✗ \(message)\u{001B}[0m\r\n")
     }
 
     func selectSession(_ sessionIndex: Int) {
@@ -477,6 +507,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
               project.sessions.count > 1 && sessionIndex < project.sessions.count else { return }
 
         let session = project.sessions[sessionIndex]
+        session.cleanupWorktree()
         backgroundObservers.removeValue(forKey: session.id)
         scrollerObservers.removeValue(forKey: session.id)
         session.terminalView.removeFromSuperview()
@@ -527,6 +558,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
 
         // Clean up all sessions
         for session in project.sessions {
+            session.cleanupWorktree()
             backgroundObservers.removeValue(forKey: session.id)
             scrollerObservers.removeValue(forKey: session.id)
             session.terminalView.removeFromSuperview()
@@ -543,14 +575,6 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         selectProject(selectedProjectIndex)
         updateTabBar()
         refreshMonitorSessions()
-    }
-
-    func renameProject(_ index: Int, name: String) {
-        guard index >= 0 && index < projects.count else { return }
-        projects[index].title = name
-        projects[index].hasCustomTitle = true
-        updateTabBar()
-        updateWindowTitle()
     }
 
     // MARK: - UI Updates

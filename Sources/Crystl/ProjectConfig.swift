@@ -9,6 +9,7 @@ import Cocoa
 // MARK: - Project Config Model
 
 struct ProjectConfig: Codable {
+    var name: String?
     var icon: String?
     var color: String?
 

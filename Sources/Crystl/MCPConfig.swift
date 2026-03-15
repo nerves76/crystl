@@ -286,11 +286,22 @@ class MCPConfigManager {
         }
     }
 
-    /// Writes only the selected servers from the catalog to {project}/.mcp.json.
+    /// Merges selected servers from the catalog into {project}/.mcp.json.
+    /// Existing servers not in the selection are preserved; selected servers are added or updated.
     func syncSelectedToProject(_ project: String, serverNames: Set<String>) {
         guard !serverNames.isEmpty else { return }
         let mcpPath = project + "/.mcp.json"
+        let fm = FileManager.default
+
+        // Load existing .mcp.json if present
         var mcpServers: [String: Any] = [:]
+        if let data = fm.contents(atPath: mcpPath),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let existing = json["mcpServers"] as? [String: Any] {
+            mcpServers = existing
+        }
+
+        // Merge in selected servers
         for name in serverNames {
             guard let server = catalog.servers[name] else { continue }
             var entry: [String: Any] = [:]

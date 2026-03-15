@@ -400,6 +400,34 @@ extension TerminalWindowController {
         browseBtn.target = self
         browseBtn.action = #selector(browseProjectsDir(_:))
         docView.addSubview(browseBtn)
+        yR -= (controlH + controlToLabel)
+
+        // ── Git Remote Base URL ──
+        let gitLabel = NSTextField(labelWithString: "GIT REMOTE BASE URL")
+        gitLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+        gitLabel.textColor = labelColor
+        gitLabel.frame = NSRect(x: rightX, y: yR, width: colWidth, height: labelH)
+        docView.addSubview(gitLabel)
+        yR -= (labelH + labelToControl)
+
+        let gitBaseUrl = UserDefaults.standard.string(forKey: "gitRemoteBaseUrl") ?? ""
+        let gitField = NSTextField(string: gitBaseUrl)
+        gitField.cell = VerticallyCenteredTextFieldCell(textCell: gitBaseUrl)
+        gitField.placeholderString = "git@github.com:user/"
+        gitField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        gitField.textColor = .white
+        gitField.backgroundColor = fieldBg
+        gitField.isBordered = false
+        gitField.isBezeled = false
+        gitField.drawsBackground = true
+        gitField.wantsLayer = true
+        gitField.layer?.cornerRadius = 8
+        gitField.layer?.masksToBounds = true
+        gitField.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 28)
+        gitField.identifier = NSUserInterfaceItemIdentifier("gitRemoteBaseUrl")
+        gitField.target = self
+        gitField.action = #selector(gitBaseUrlChanged(_:))
+        docView.addSubview(gitField)
         yR -= (controlH + sectionBreak)
 
         // ── MCP Servers ──
@@ -788,6 +816,11 @@ extension TerminalWindowController {
         }
     }
 
+    @objc func gitBaseUrlChanged(_ sender: NSTextField) {
+        let value = sender.stringValue.trimmingCharacters(in: .whitespaces)
+        UserDefaults.standard.set(value, forKey: "gitRemoteBaseUrl")
+    }
+
     // MARK: - Starter File Actions
 
     @objc func editStarter(_ sender: NSButton) {
@@ -908,7 +941,7 @@ class DemoRunner {
                 let color = NSColor(hex: proj.color) ?? .white
                 let project = ProjectTab(directory: path, color: color)
                 project.iconName = proj.icon
-                let session = project.addSession(frame: tc.contentArea.bounds)
+                guard let session = project.addSession(frame: tc.contentArea.bounds).session else { continue }
                 session.terminalView.processDelegate = tc
                 tc.projects.append(project)
 
