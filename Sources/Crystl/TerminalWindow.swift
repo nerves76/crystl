@@ -55,6 +55,9 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
     private var codexModeLabel: NSTextField?
     private var codexModeBg: NSView?
     private var frostView: InsetFrostView?
+    private var clickMonitor: Any?
+    private var clickDidDrag = false
+    private var clickDownPoint: NSPoint?
 
     // Convenience accessors
     var selectedProject: ProjectTab? {
@@ -325,6 +328,102 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         }
         monitor.start()
         self.agentMonitor = monitor
+
+        // Click to open file paths from terminal output
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp, .leftMouseDragged]) { [weak self] event in
+            guard let self = self else { return event }
+            switch event.type {
+            case .leftMouseDown:
+                self.clickDidDrag = false
+                self.clickDownPoint = event.locationInWindow
+            case .leftMouseDragged:
+                // If mouse moved more than a few pixels, it's a selection drag
+                if let down = self.clickDownPoint {
+                    let dx = event.locationInWindow.x - down.x
+                    let dy = event.locationInWindow.y - down.y
+                    if dx * dx + dy * dy > 9 { self.clickDidDrag = true }
+                }
+            case .leftMouseUp:
+                defer { self.clickDownPoint = nil }
+                // Only act on clean single clicks (no drag, no double-click)
+                guard !self.clickDidDrag,
+                      event.clickCount == 1,
+                      let session = self.selectedSession else { return event }
+                let tv = session.terminalView
+                let loc = tv.convert(event.locationInWindow, from: nil)
+                guard tv.bounds.contains(loc) else { return event }
+                if let path = self.detectFilePath(in: tv, at: loc, cwd: session.cwd) {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                }
+            default: break
+            }
+            return event
+        }
+    }
+
+    // MARK: - Click Path Detection
+
+    /// Extracts a file path from terminal text at the given point and resolves it.
+    private func detectFilePath(in tv: LocalProcessTerminalView, at point: CGPoint, cwd: String) -> String? {
+        let terminal = tv.getTerminal()
+
+        // Calculate which row/col was clicked using cell dimensions
+        let cellW = tv.bounds.width / CGFloat(terminal.cols)
+        let cellH = tv.bounds.height / CGFloat(terminal.rows)
+        let col = Int(point.x / cellW)
+        let row = Int((tv.bounds.height - point.y) / cellH)
+
+        guard let line = terminal.getLine(row: row) else { return nil }
+        let text = line.translateToString(trimRight: true)
+        guard !text.isEmpty else { return nil }
+
+        // Find the path-like token around the clicked column
+        guard let pathStr = extractPathToken(from: text, around: col) else { return nil }
+
+        // Strip trailing colon, line number, column (e.g. "file.swift:42:10")
+        let cleaned = pathStr.replacingOccurrences(of: #":(\d+)(:\d+)?$"#, with: "", options: .regularExpression)
+
+        // Resolve relative to cwd
+        let resolved: String
+        if cleaned.hasPrefix("/") || cleaned.hasPrefix("~") {
+            resolved = (cleaned as NSString).expandingTildeInPath
+        } else {
+            resolved = (cwd as NSString).appendingPathComponent(cleaned)
+        }
+
+        // Only open if the file actually exists
+        return FileManager.default.fileExists(atPath: resolved) ? resolved : nil
+    }
+
+    /// Finds a file-path-like token in `text` around column `col`.
+    private func extractPathToken(from text: String, around col: Int) -> String? {
+        // Characters that can appear in a file path (plus : for line numbers)
+        let pathChars = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "/.~_-+@:"))
+        let chars = Array(text.unicodeScalars)
+        guard col >= 0 && col < chars.count else { return nil }
+
+        // Walk left from col to find the start of the path
+        var start = col
+        while start > 0 && pathChars.contains(chars[start - 1]) {
+            start -= 1
+        }
+
+        // Walk right from col to find the end
+        var end = col
+        while end < chars.count - 1 && pathChars.contains(chars[end + 1]) {
+            end += 1
+        }
+
+        var scalars = String.UnicodeScalarView()
+        for i in start...end { scalars.append(chars[i]) }
+        let token = String(scalars)
+
+        // Must look like a file path — contains at least one / or . with extension
+        let hasSlash = token.contains("/")
+        let hasExtension = token.range(of: #"\.\w+(:\d+)*$"#, options: .regularExpression) != nil
+        guard hasSlash || hasExtension else { return nil }
+
+        return token
     }
 
     // MARK: - Project Management

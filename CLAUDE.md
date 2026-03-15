@@ -16,17 +16,22 @@ killall Crystl; open ~/Applications/Crystl.app  # restart after install
 ```
 main.swift              Entry point, NSApplication setup, main menu
 AppDelegate.swift       App lifecycle, bridge polling, approval/notification panels
-TerminalWindow.swift    Window, gem bar, gem/shard management, settings flip, terminal config
+TerminalWindow.swift    Window, gem bar, gem/shard management, settings flip, terminal config, click-to-open
 TerminalSession.swift   TerminalSession (shard), ProjectTab (gem), InsetFrostView, GlowButton, TerminalDropView
 TabBarView.swift        TabBarView (gem tabs) + SessionBarView (shard bar)
 CrystalRail.swift       Screen-edge glass rail: tiles, add button, new gem panel
 GitWorktree.swift       Git worktree management for isolated shards
 DirectoryPicker.swift   Warp-style directory chooser overlay for new tabs
-CommandHistory.swift    Shell integration (ZDOTDIR injection) + OSC 7770 command logger
-SettingsView.swift      Settings panel, StarterEditorPanel
+CommandHistory.swift    Shell integration (ZDOTDIR injection) + OSC 7770 command logger + API key injection
+SettingsView.swift      Settings panel, GlassToggle, StarterEditorPanel
+APIKeyStore.swift       Secure API key storage via macOS Keychain
 ProjectConfig.swift     Per-project config (.crystl/project.json): name, icon, color
 MCPConfig.swift         MCP server catalog management
 StarterManager.swift    Starter file templates (~/.config/crystl/starters.json)
+LucideIconData.swift    Bundled Lucide icon SVG data (133 icons including gem/crystal set)
+LucideIcons.swift       SVG-to-NSImage renderer for Lucide icons
+IconPickerView.swift    Icon and color picker panels for gems
+AgentDetector.swift     Agent detection (Claude Code, Codex) via terminal process tree
 Models.swift            JSON data types for bridge communication
 Helpers.swift           Shared utilities: colors, mask images, session color map
 ```
@@ -46,6 +51,7 @@ Crystl sends POST /decide --> bridge resolves the held connection
 - **Animation**: `animateLiquidCrystal()` in AppDelegate for panel open effects. `CATransition(type: "flip")` for settings flip. Tile pulse uses `CABasicAnimation` on border + scale.
 - **Gem ↔ Rail sync**: `TerminalWindowController` fires `onTabAdded/Removed/Selected/Updated` callbacks. `AppDelegate` wires these to `CrystalRailController` methods.
 - **Shell integration**: `ShellIntegration` overrides ZDOTDIR to inject zsh hooks that emit OSC 7770 sequences for command history tracking.
+- **Click-to-open**: Clicking on file paths in terminal output opens them in the default editor. Drag or multi-click is ignored (text selection still works normally).
 
 ### Shards (Sub-tabs)
 
@@ -89,6 +95,60 @@ Project: ~/Projects/myapp (main branch)
 - Starter files skip existing files (no overwrites)
 - MCP `.mcp.json` merges with existing config (preserves manual servers)
 - ProjectConfig merges on save (name/icon/color don't clobber each other)
+
+### Click-to-Open File Paths
+
+Clicking on a file path in the terminal opens it in the system default editor.
+
+**How it works:**
+- `NSEvent.addLocalMonitorForEvents` watches for mouse down/drag/up on terminal views
+- On clean single click (no drag, no double-click), extracts the row text via `terminal.getLine(row:).translateToString()`
+- Walks left/right from the click column to extract a path-like token (characters: `a-z 0-9 / . ~ _ - + @ :`)
+- Strips trailing `:line:col` suffixes (e.g. `file.swift:42:10` → `file.swift`)
+- Resolves relative paths against the session's cwd
+- Only opens if `FileManager.default.fileExists(atPath:)` — no false positives
+- Uses `NSWorkspace.shared.open()` to open with the system default editor
+
+**Filtering:**
+- Must contain a `/` or a file extension (`.swift`, `.md`, etc.) to be considered a path
+- Drag of 3+ pixels cancels the click (text selection)
+- Double/triple clicks are ignored (word/line selection)
+
+### API Keys
+
+API keys for AI providers are stored securely in macOS Keychain and injected as environment variables into every new terminal session.
+
+**Supported providers:**
+| Provider | Environment Variable | Placeholder |
+|----------|---------------------|-------------|
+| Anthropic | `ANTHROPIC_API_KEY` | `sk-ant-...` |
+| OpenAI | `OPENAI_API_KEY` | `sk-...` |
+| Google AI | `GEMINI_API_KEY` | `AIza...` |
+| OpenRouter | `OPENROUTER_API_KEY` | `sk-or-...` |
+
+**Storage:** `APIKeyStore` uses `Security.framework` Keychain APIs under service `com.crystl.api-keys`. Keys are never stored in UserDefaults or on disk in plain text.
+
+**Injection:** `ShellIntegration.environment()` calls `APIKeyStore.shared.allKeys()` and merges into the process environment. Existing env vars take precedence — if a key is already set in the user's shell profile, Crystl won't override it.
+
+**Settings UI:** Secure text fields (bullets) with masked placeholders for saved keys (e.g. `sk-ant••••••ab3f`). Field clears after saving. New sessions pick up keys immediately; existing sessions need restart.
+
+### GlassToggle
+
+`GlassToggle` is a custom iOS-style toggle switch used for the Claude/Codex enable toggles in settings.
+
+- Rounded track: green (`rgba(0.3, 0.7, 0.45, 0.6)`) when on, glass (`white alpha 0.12`) when off
+- White circular knob slides with 0.2s ease animation
+- Label text to the right of the track
+- `mouseDown` toggles state and fires target/action
+- `.state` property returns `NSControl.StateValue` for compatibility with existing handlers
+
+### Lucide Icons
+
+133 bundled Lucide icons including a gem/crystal set. Gem-related icons added:
+
+`gem`, `diamond`, `diamond-plus`, `diamond-minus`, `diamond-percent`, `crown`, `hexagon`, `octagon`, `pentagon`, `pyramid`, `sparkle`, `sparkles`, `triangle`
+
+Icon data lives in `LucideIconData.swift` as SVG inner elements. `LucideIcons.swift` renders them to `NSImage` at any size/color.
 
 ## File Size Limits
 
@@ -175,8 +235,10 @@ The New Gem panel (from rail "+" or "Gem Settings" button) includes:
 
 ## Settings
 
-- `projectsDirectory` — base directory for new gems. Default: `~/Projects`.
-- `gitRemoteBaseUrl` — base URL for git remotes (e.g. `git@github.com:user/`). Auto-fills remote field in New Project panel as `{baseUrl}{name}.git`.
+- `projectsDirectory` — UserDefaults. Base directory for new gems. Default: `~/Projects`.
+- `gitRemoteBaseUrl` — UserDefaults. Base URL for git remotes (e.g. `git@github.com:user/`). Auto-fills remote field in New Gem panel as `{baseUrl}{name}.git`.
+- `agentEnabled:claude` / `agentEnabled:codex` — UserDefaults (Bool). Enable/disable agent sections in settings. Claude defaults to `true`, Codex to `false`. Uses `GlassToggle` UI.
+- API keys — Keychain (`com.crystl.api-keys`). `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`. Injected into terminal sessions via `ShellIntegration.environment()`.
 - Bridge port `19280` — hardcoded in AppDelegate and build.sh.
 - Shell prompt is not overridden — user's own zsh config applies.
 

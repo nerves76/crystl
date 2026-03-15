@@ -5,6 +5,101 @@
 
 import Cocoa
 
+// ── Glass Toggle ──
+
+/// iOS-style toggle switch rendered with glass aesthetics.
+/// Fires target/action when toggled. Uses `identifier` for identification.
+class GlassToggle: NSView {
+    var isOn: Bool { didSet { updateAppearance(animated: true) } }
+    weak var target: AnyObject?
+    var action: Selector?
+
+    /// Label text displayed to the right of the toggle.
+    var title: String {
+        didSet { label.stringValue = title }
+    }
+
+    private let track = CALayer()
+    private let knob = CALayer()
+    private let label: NSTextField
+
+    private let trackW: CGFloat = 36
+    private let trackH: CGFloat = 20
+    private let knobSize: CGFloat = 16
+    private let knobPad: CGFloat = 2
+
+    init(title: String, isOn: Bool, frame: NSRect) {
+        self.isOn = isOn
+        self.title = title
+        self.label = NSTextField(labelWithString: title)
+        super.init(frame: frame)
+        wantsLayer = true
+
+        // Track
+        track.frame = NSRect(x: 0, y: (frame.height - trackH) / 2, width: trackW, height: trackH)
+        track.cornerRadius = trackH / 2
+        track.borderWidth = 1
+        track.borderColor = NSColor(white: 1.0, alpha: 0.2).cgColor
+        layer?.addSublayer(track)
+
+        // Knob
+        let knobY = track.frame.origin.y + knobPad
+        knob.frame = NSRect(x: knobPad, y: knobY, width: knobSize, height: knobSize)
+        knob.cornerRadius = knobSize / 2
+        knob.backgroundColor = NSColor.white.cgColor
+        knob.shadowColor = NSColor.black.cgColor
+        knob.shadowOffset = CGSize(width: 0, height: -1)
+        knob.shadowRadius = 2
+        knob.shadowOpacity = 0.3
+        layer?.addSublayer(knob)
+
+        // Label
+        label.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+        label.textColor = .white
+        label.frame = NSRect(x: trackW + 10, y: (frame.height - 16) / 2, width: frame.width - trackW - 10, height: 16)
+        addSubview(label)
+
+        updateAppearance(animated: false)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func updateAppearance(animated: Bool) {
+        let onX = trackW - knobSize - knobPad
+        let offX = knobPad
+        let targetX = isOn ? onX : offX
+        let trackColor = isOn
+            ? NSColor(red: 0.3, green: 0.7, blue: 0.45, alpha: 0.6).cgColor
+            : NSColor(white: 1.0, alpha: 0.12).cgColor
+
+        if animated {
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(0.2)
+            CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
+        } else {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+        }
+
+        knob.frame.origin.x = targetX
+        track.backgroundColor = trackColor
+
+        CATransaction.commit()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        isOn.toggle()
+        if let t = target, let a = action {
+            NSApp.sendAction(a, to: t, from: self)
+        }
+    }
+
+    /// Compatibility with NSButton state for the existing handler.
+    var state: NSControl.StateValue {
+        isOn ? .on : .off
+    }
+}
+
 extension TerminalWindowController {
 
     func flipToSettings() {
@@ -145,18 +240,13 @@ extension TerminalWindowController {
         yL -= (20 + sectionToHeader)
 
         // ── Claude ──
-        let claudeToggle = NSButton(checkboxWithTitle: "", target: self, action: #selector(agentEnableToggled(_:)))
-        claudeToggle.state = claudeEnabled ? .on : .off
+        let claudeToggle = GlassToggle(title: "Claude", isOn: claudeEnabled,
+                                        frame: NSRect(x: leftX, y: yL, width: colWidth, height: 22))
         claudeToggle.identifier = NSUserInterfaceItemIdentifier("agentEnable:claude")
-        claudeToggle.frame = NSRect(x: leftX, y: yL, width: 20, height: 18)
+        claudeToggle.target = self
+        claudeToggle.action = #selector(agentEnableToggled(_:))
         docView.addSubview(claudeToggle)
-
-        let claudeSectionLabel = NSTextField(labelWithString: "Claude")
-        claudeSectionLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-        claudeSectionLabel.textColor = .white
-        claudeSectionLabel.frame = NSRect(x: leftX + 24, y: yL, width: colWidth - 24, height: 16)
-        docView.addSubview(claudeSectionLabel)
-        yL -= (18 + sectionToHeader)
+        yL -= (22 + sectionToHeader)
 
         // Claude settings — container for easy show/hide
         let claudeSettingsY = yL
@@ -286,18 +376,13 @@ extension TerminalWindowController {
         }
 
         // ── Codex ──
-        let codexToggle = NSButton(checkboxWithTitle: "", target: self, action: #selector(agentEnableToggled(_:)))
-        codexToggle.state = codexEnabled ? .on : .off
+        let codexToggle = GlassToggle(title: "Codex", isOn: codexEnabled,
+                                       frame: NSRect(x: leftX, y: yL, width: colWidth, height: 22))
         codexToggle.identifier = NSUserInterfaceItemIdentifier("agentEnable:codex")
-        codexToggle.frame = NSRect(x: leftX, y: yL, width: 20, height: 18)
+        codexToggle.target = self
+        codexToggle.action = #selector(agentEnableToggled(_:))
         docView.addSubview(codexToggle)
-
-        let codexSectionLabel = NSTextField(labelWithString: "Codex")
-        codexSectionLabel.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-        codexSectionLabel.textColor = .white
-        codexSectionLabel.frame = NSRect(x: leftX + 24, y: yL, width: colWidth - 24, height: 16)
-        docView.addSubview(codexSectionLabel)
-        yL -= (18 + sectionToHeader)
+        yL -= (22 + sectionToHeader)
 
         let codexSettingsY = yL
         var codexControls: [NSView] = []
@@ -429,6 +514,54 @@ extension TerminalWindowController {
         gitField.action = #selector(gitBaseUrlChanged(_:))
         docView.addSubview(gitField)
         yR -= (controlH + sectionBreak)
+
+        // ── API Keys ──
+        let apiTitle = NSTextField(labelWithString: "API KEYS")
+        apiTitle.font = NSFont.systemFont(ofSize: 10, weight: .bold)
+        apiTitle.textColor = labelColor
+        apiTitle.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 14)
+        docView.addSubview(apiTitle)
+        yR -= (14 + 6)
+
+        let apiDesc = NSTextField(labelWithString: "Injected into shell sessions as env vars")
+        apiDesc.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        apiDesc.textColor = NSColor(white: 1.0, alpha: 0.5)
+        apiDesc.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 14)
+        docView.addSubview(apiDesc)
+        yR -= (14 + 10)
+
+        let store = APIKeyStore.shared
+        for slot in apiKeySlots {
+            let slotLabel = NSTextField(labelWithString: slot.name.uppercased())
+            slotLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+            slotLabel.textColor = labelColor
+            slotLabel.frame = NSRect(x: rightX, y: yR, width: colWidth, height: labelH)
+            docView.addSubview(slotLabel)
+            yR -= (labelH + labelToControl)
+
+            let existing = store.get(slot.envVar) ?? ""
+            let masked = existing.isEmpty ? "" : maskKey(existing)
+            let keyField = NSSecureTextField(string: "")
+            keyField.cell = VerticallyCenteredTextFieldCell(textCell: "")
+            (keyField.cell as? NSSecureTextFieldCell)?.echosBullets = true
+            keyField.placeholderString = existing.isEmpty ? slot.placeholder : masked
+            keyField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+            keyField.textColor = .white
+            keyField.backgroundColor = fieldBg
+            keyField.isBordered = false
+            keyField.isBezeled = false
+            keyField.drawsBackground = true
+            keyField.wantsLayer = true
+            keyField.layer?.cornerRadius = 8
+            keyField.layer?.masksToBounds = true
+            keyField.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 28)
+            keyField.identifier = NSUserInterfaceItemIdentifier("apiKey:\(slot.envVar)")
+            keyField.target = self
+            keyField.action = #selector(apiKeyChanged(_:))
+            docView.addSubview(keyField)
+            yR -= (controlH + controlToLabel)
+        }
+        yR -= (sectionBreak - controlToLabel)
 
         // ── MCP Servers ──
         let mcpTitle = NSTextField(labelWithString: "DEFAULT MCP SERVERS")
@@ -676,11 +809,18 @@ extension TerminalWindowController {
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
-    @objc func agentEnableToggled(_ sender: NSButton) {
-        guard let raw = sender.identifier?.rawValue,
-              raw.hasPrefix("agentEnable:") else { return }
-        let agent = String(raw.dropFirst(12))
-        let isOn = sender.state == .on
+    @objc func agentEnableToggled(_ sender: AnyObject) {
+        let raw: String?
+        let isOn: Bool
+        if let toggle = sender as? GlassToggle {
+            raw = toggle.identifier?.rawValue
+            isOn = toggle.state == .on
+        } else if let btn = sender as? NSButton {
+            raw = btn.identifier?.rawValue
+            isOn = btn.state == .on
+        } else { return }
+        guard let rawVal = raw, rawVal.hasPrefix("agentEnable:") else { return }
+        let agent = String(rawVal.dropFirst(12))
         UserDefaults.standard.set(isOn, forKey: "agentEnabled:\(agent)")
 
         // Rebuild settings to show/hide agent controls
@@ -819,6 +959,27 @@ extension TerminalWindowController {
     @objc func gitBaseUrlChanged(_ sender: NSTextField) {
         let value = sender.stringValue.trimmingCharacters(in: .whitespaces)
         UserDefaults.standard.set(value, forKey: "gitRemoteBaseUrl")
+    }
+
+    @objc func apiKeyChanged(_ sender: NSTextField) {
+        guard let raw = sender.identifier?.rawValue,
+              raw.hasPrefix("apiKey:") else { return }
+        let envVar = String(raw.dropFirst(7))
+        let value = sender.stringValue.trimmingCharacters(in: .whitespaces)
+        APIKeyStore.shared.set(envVar, value: value)
+        // Update placeholder to show masked key
+        if !value.isEmpty {
+            sender.placeholderString = maskKey(value)
+        }
+        sender.stringValue = ""
+    }
+
+    /// Masks an API key for display: shows first 6 and last 4 chars.
+    private func maskKey(_ key: String) -> String {
+        guard key.count > 12 else { return String(repeating: "\u{2022}", count: key.count) }
+        let prefix = String(key.prefix(6))
+        let suffix = String(key.suffix(4))
+        return prefix + String(repeating: "\u{2022}", count: 6) + suffix
     }
 
     // MARK: - Starter File Actions

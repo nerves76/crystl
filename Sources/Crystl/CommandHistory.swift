@@ -75,6 +75,10 @@ class ShellIntegration {
         env["TERM_PROGRAM"] = "Crystl"
         // Remove Claude Code session marker so terminals can launch fresh claude instances
         env.removeValue(forKey: "CLAUDECODE")
+        // Inject API keys from Keychain (only if not already set in environment)
+        for (key, value) in APIKeyStore.shared.allKeys() {
+            if env[key] == nil { env[key] = value }
+        }
         return env.map { "\($0.key)=\($0.value)" }
     }
 
