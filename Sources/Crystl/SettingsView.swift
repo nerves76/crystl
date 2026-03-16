@@ -989,13 +989,6 @@ extension TerminalWindowController {
             addLicenseKeyInput(to: docView, x: x, y: &y, w: w)
 
         case .unlicensed:
-            let statusLabel = NSTextField(labelWithString: "Free")
-            statusLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-            statusLabel.textColor = NSColor(white: 1.0, alpha: 0.5)
-            statusLabel.frame = NSRect(x: x, y: y, width: w, height: 16)
-            docView.addSubview(statusLabel)
-            y -= 30
-
             addLicenseKeyInput(to: docView, x: x, y: &y, w: w)
         }
 
