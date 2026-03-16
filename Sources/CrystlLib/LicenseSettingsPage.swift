@@ -80,6 +80,8 @@ extension TerminalWindowController {
         keyField.placeholderString = "Paste license key"
         keyField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
         keyField.textColor = .white
+        keyField.isEditable = true
+        keyField.isSelectable = true
         keyField.isBordered = false
         keyField.isBezeled = false
         keyField.drawsBackground = false

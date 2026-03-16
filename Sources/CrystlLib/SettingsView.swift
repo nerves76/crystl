@@ -294,6 +294,7 @@ extension TerminalWindowController {
         field.isBezeled = false
         field.drawsBackground = false
         field.isEditable = editable
+        field.isSelectable = true
         field.wantsLayer = true
         field.layer?.backgroundColor = settingsFieldBg.cgColor
         field.layer?.cornerRadius = 8

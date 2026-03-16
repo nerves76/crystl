@@ -77,6 +77,8 @@ extension TerminalWindowController {
                 keyField.placeholderString = existing.isEmpty ? slot.placeholder : masked
                 keyField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
                 keyField.textColor = .white
+                keyField.isEditable = true
+                keyField.isSelectable = true
                 keyField.isBordered = false
                 keyField.isBezeled = false
                 keyField.drawsBackground = false

@@ -150,7 +150,6 @@ class RailTileView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         onClick?(tile.tabId)
-        onChangeIcon?(tile.tabId)
     }
 
     func update() {
@@ -1098,6 +1097,8 @@ class CrystalRailController {
         )
         panel.isFloatingPanel = true
         panel.level = .floating
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isMovableByWindowBackground = false
         panel.titlebarAppearsTransparent = true
