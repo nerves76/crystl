@@ -8,10 +8,21 @@ let package = Package(
         .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", from: "1.11.0")
     ],
     targets: [
+        .target(
+            name: "CrystlLib",
+            dependencies: ["SwiftTerm"],
+            path: "Sources/Crystl",
+            exclude: ["main.swift"]
+        ),
         .executableTarget(
             name: "Crystl",
-            dependencies: ["SwiftTerm"],
-            path: "Sources/Crystl"
+            dependencies: ["CrystlLib"],
+            path: "Sources/CrystlApp"
+        ),
+        .testTarget(
+            name: "CrystlTests",
+            dependencies: ["CrystlLib"],
+            path: "Tests/CrystlTests"
         )
     ]
 )

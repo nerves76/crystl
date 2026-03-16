@@ -15,9 +15,7 @@
 
 import Cocoa
 
-public class AppDelegate: NSObject, NSApplicationDelegate {
-    public override init() { super.init() }
-
+class AppDelegate: NSObject, NSApplicationDelegate {
     var terminalController: TerminalWindowController!
     var rail: CrystalRailController?
     var pollTimer: Timer?
@@ -58,7 +56,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }()
 
-    public func applicationWillFinishLaunching(_ notification: Notification) {
+    func applicationWillFinishLaunching(_ notification: Notification) {
         // Register Apple Event handler early so we catch open events during launch
         NSAppleEventManager.shared().setEventHandler(
             self,
@@ -72,7 +70,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         NSUpdateDynamicServices()
     }
 
-    public func applicationDidFinishLaunching(_ notification: Notification) {
+    func applicationDidFinishLaunching(_ notification: Notification) {
         // Launch terminal window
         terminalController = TerminalWindowController()
         terminalController.onProcessFinished = { [weak self] title, cwd, shardName in
@@ -170,11 +168,11 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         poll()
     }
 
-    public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
     }
 
-    public func applicationWillTerminate(_ notification: Notification) {
+    func applicationWillTerminate(_ notification: Notification) {
         ShellIntegration.shared.cleanup()
     }
 
@@ -1382,19 +1380,19 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu Actions
 
-    @objc public func showSettings() {
+    @objc func showSettings() {
         if !terminalController.isShowingSettings {
             terminalController.flipToSettings()
         }
         terminalController.window.makeKeyAndOrderFront(nil)
     }
 
-    @objc public func newTab() {
+    @objc func newTab() {
         terminalController.addProject()
         terminalController.window.makeKeyAndOrderFront(nil)
     }
 
-    @objc public func closeTab() {
+    @objc func closeTab() {
         let tc = terminalController!
         // If split, close the focused pane first
         if let sc = tc.splitController, sc.isSplit, let project = tc.selectedProject {
@@ -1409,23 +1407,23 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc public func splitPane() {
+    @objc func splitPane() {
         terminalController.splitFocusedPane()
     }
 
-    @objc public func selectNextTab() {
+    @objc func selectNextTab() {
         let tc = terminalController!
         let next = (tc.selectedProjectIndex + 1) % tc.projects.count
         tc.selectProject(next)
     }
 
-    @objc public func selectPreviousTab() {
+    @objc func selectPreviousTab() {
         let tc = terminalController!
         let prev = (tc.selectedProjectIndex - 1 + tc.projects.count) % tc.projects.count
         tc.selectProject(prev)
     }
 
-    @objc public func openHelp() {
+    @objc func openHelp() {
         NSWorkspace.shared.open(URL(string: "https://github.com/nerves76/crystl")!)
     }
 }

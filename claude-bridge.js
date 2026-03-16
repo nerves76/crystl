@@ -6,9 +6,18 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const os = require('os');
 
 const PORT = parseInt(process.env.CLAUDE_BRIDGE_PORT || '19280', 10);
 const TIMEOUT_MS = 60000; // 60s before falling through to normal prompt
+
+// ── Auth Token ──
+// Generate a random bearer token on startup and write it to ~/.crystl-bridge-token
+// so the Crystl app (and only it) can authenticate with the bridge.
+const TOKEN_PATH = path.join(os.homedir(), '.crystl-bridge-token');
+const AUTH_TOKEN = crypto.randomBytes(32).toString('hex');
+fs.writeFileSync(TOKEN_PATH, AUTH_TOKEN + '\n', { mode: 0o600 });
 
 // Pending approval requests: id -> { resolve, timer, data, created }
 const pendingRequests = new Map();
@@ -124,14 +133,23 @@ function shouldAutoApprove(hookData) {
 // ── HTTP Server ──
 
 const server = http.createServer((req, res) => {
-  // CORS headers for extension
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // CORS headers — localhost only, no cross-origin
+  res.setHeader('Access-Control-Allow-Origin', 'null');
   res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  // Validate bearer token on all endpoints
+  const authHeader = req.headers['authorization'] || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  if (token !== AUTH_TOKEN) {
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Unauthorized' }));
     return;
   }
 
@@ -483,6 +501,7 @@ function log(msg) {
 
 server.listen(PORT, '127.0.0.1', () => {
   log(`Claude Bridge listening on http://127.0.0.1:${PORT}`);
+  log(`Auth token written to ${TOKEN_PATH}`);
   log(`Poll endpoint: GET http://127.0.0.1:${PORT}/pending`);
   log(`Decision endpoint: POST http://127.0.0.1:${PORT}/decide`);
   log(`Hook endpoint: POST http://127.0.0.1:${PORT}/hook`);
