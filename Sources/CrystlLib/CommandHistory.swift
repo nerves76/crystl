@@ -24,8 +24,21 @@ class ShellIntegration {
 
     private init() {
         originalZdotdir = ProcessInfo.processInfo.environment["ZDOTDIR"] ?? NSHomeDirectory()
-        let tmpBase = NSTemporaryDirectory() + "crystl-shell-\(ProcessInfo.processInfo.processIdentifier)"
-        zdotdir = tmpBase
+
+        // Use mkdtemp for a secure, unpredictable temp directory (avoids PID-guessable paths)
+        let template = NSTemporaryDirectory() + "crystl-shell-XXXXXXXX"
+        var templateBytes = Array(template.utf8CString)
+        if mkdtemp(&templateBytes) != nil {
+            let secureTmpDir = String(cString: templateBytes)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: secureTmpDir)
+            zdotdir = secureTmpDir
+        } else {
+            // Fallback — use UUID instead of PID
+            let fallback = NSTemporaryDirectory() + "crystl-shell-\(UUID().uuidString)"
+            try? FileManager.default.createDirectory(atPath: fallback, withIntermediateDirectories: true)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fallback)
+            zdotdir = fallback
+        }
         writeFiles()
     }
 

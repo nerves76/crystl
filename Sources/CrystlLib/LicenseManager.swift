@@ -187,6 +187,7 @@ class LicenseManager {
         // Verify signature
         guard Self.publicKeyBase64 != "REPLACE_WITH_PUBLIC_KEY" else {
             // Development mode — accept any well-formed key without signature check
+            print("[Crystl] WARNING: License validation running in development mode — no signature verification")
             return decodePayload(payloadData)
         }
 
@@ -229,6 +230,7 @@ class LicenseManager {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
             kSecAttrAccount as String: keychainAccount,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -244,12 +246,14 @@ class LicenseManager {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
             kSecAttrAccount as String: keychainAccount,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
         let update: [String: Any] = [kSecValueData as String: data]
         let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
         if status == errSecItemNotFound {
             var add = query
             add[kSecValueData as String] = data
+            add[kSecAttrLabel as String] = "Crystl License Key"
             SecItemAdd(add as CFDictionary, nil)
         }
     }
@@ -259,6 +263,7 @@ class LicenseManager {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
             kSecAttrAccount as String: keychainAccount,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
         SecItemDelete(query as CFDictionary)
     }

@@ -11,8 +11,7 @@ let package = Package(
         .target(
             name: "CrystlLib",
             dependencies: ["SwiftTerm"],
-            path: "Sources/Crystl",
-            exclude: ["main.swift"]
+            path: "Sources/CrystlLib"
         ),
         .executableTarget(
             name: "Crystl",

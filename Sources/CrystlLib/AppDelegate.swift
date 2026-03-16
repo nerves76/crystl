@@ -15,7 +15,8 @@
 
 import Cocoa
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+public class AppDelegate: NSObject, NSApplicationDelegate {
+    public override init() { super.init() }
     var terminalController: TerminalWindowController!
     var rail: CrystalRailController?
     var pollTimer: Timer?
@@ -42,6 +43,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var isPaused: Bool = false
     var currentEnabledNotifications: EnabledNotifications?
 
+    // Adaptive poll interval — speeds up when there's activity, backs off when idle
+    private var pollInterval: TimeInterval = 0.5
+    private let pollIntervalMin: TimeInterval = 0.5
+    private let pollIntervalMax: TimeInterval = 5.0
+
     var pendingFolders: [String] = []
     var currentOpacity: CGFloat = {
         let saved = UserDefaults.standard.double(forKey: "windowOpacity")
@@ -56,7 +62,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }()
 
-    func applicationWillFinishLaunching(_ notification: Notification) {
+    public func applicationWillFinishLaunching(_ notification: Notification) {
         // Register Apple Event handler early so we catch open events during launch
         NSAppleEventManager.shared().setEventHandler(
             self,
@@ -70,7 +76,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSUpdateDynamicServices()
     }
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    public func applicationDidFinishLaunching(_ notification: Notification) {
         // Launch terminal window
         terminalController = TerminalWindowController()
         terminalController.onProcessFinished = { [weak self] title, cwd, shardName in
@@ -161,18 +167,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         pendingFolders.removeAll()
 
-        // Start bridge polling
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            self?.poll()
-        }
+        // Start bridge polling with adaptive backoff
+        schedulePollTimer()
         poll()
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+    public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         return true
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
+    public func applicationWillTerminate(_ notification: Notification) {
+        terminalController?.cleanupAllObservers()
         ShellIntegration.shared.cleanup()
     }
 
@@ -429,11 +434,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // ── Menu Actions ──
 
-    @objc func newShard() {
+    @objc public func newShard() {
         terminalController.addProject()
     }
 
-    @objc func closeShard() {
+    @objc public func closeShard() {
         let tc = terminalController!
         if tc.projects.count > 1 {
             tc.closeProject(tc.selectedProjectIndex)
@@ -441,11 +446,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // ── Bridge Polling ──
-    // Polls GET /pending every 0.5s. The response contains pending requests,
-    // active sessions, recent history, and current settings. On each poll we
-    // sync the UI state and show/dismiss approval panels as needed.
+    // Polls GET /pending with adaptive backoff. Speeds up (0.5s) when there
+    // are pending requests or notifications, backs off (up to 5s) when idle.
 
-    func poll() {
+    private func schedulePollTimer() {
+        pollTimer?.invalidate()
+        pollTimer = Timer.scheduledTimer(timeInterval: pollInterval, target: self,
+                                          selector: #selector(poll), userInfo: nil, repeats: false)
+    }
+
+    @objc func poll() {
         guard let url = URL(string: "http://127.0.0.1:\(bridgePort)/pending") else { return }
         var req = URLRequest(url: url)
         req.timeoutInterval = 3
@@ -469,10 +479,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         self.currentEnabledNotifications = s.enabledNotifications
                         self.terminalController.syncSettings(mode: s.autoApproveMode, paused: s.paused ?? false)
                     }
+                    // Adaptive backoff: fast when active, slow when idle
+                    let hasActivity = !resp.pending.isEmpty
+                        || !(resp.notifications ?? []).isEmpty
+                    if hasActivity {
+                        self.pollInterval = self.pollIntervalMin
+                    } else {
+                        self.pollInterval = min(self.pollInterval * 1.5, self.pollIntervalMax)
+                    }
                 } else {
                     self.isConnected = false
                     self.dismissAllPanels()
                 }
+                self.schedulePollTimer()
             }
         }.resume()
     }
@@ -1380,19 +1399,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu Actions
 
-    @objc func showSettings() {
+    @objc public func showSettings() {
         if !terminalController.isShowingSettings {
             terminalController.flipToSettings()
         }
         terminalController.window.makeKeyAndOrderFront(nil)
     }
 
-    @objc func newTab() {
+    @objc public func newTab() {
         terminalController.addProject()
         terminalController.window.makeKeyAndOrderFront(nil)
     }
 
-    @objc func closeTab() {
+    @objc public func closeTab() {
         let tc = terminalController!
         // If split, close the focused pane first
         if let sc = tc.splitController, sc.isSplit, let project = tc.selectedProject {
@@ -1407,23 +1426,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc func splitPane() {
+    @objc public func splitPane() {
         terminalController.splitFocusedPane()
     }
 
-    @objc func selectNextTab() {
+    @objc public func selectNextTab() {
         let tc = terminalController!
         let next = (tc.selectedProjectIndex + 1) % tc.projects.count
         tc.selectProject(next)
     }
 
-    @objc func selectPreviousTab() {
+    @objc public func selectPreviousTab() {
         let tc = terminalController!
         let prev = (tc.selectedProjectIndex - 1 + tc.projects.count) % tc.projects.count
         tc.selectProject(prev)
     }
 
-    @objc func openHelp() {
+    @objc public func openHelp() {
         NSWorkspace.shared.open(URL(string: "https://github.com/nerves76/crystl")!)
     }
 }

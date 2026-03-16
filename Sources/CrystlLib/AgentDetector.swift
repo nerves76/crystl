@@ -41,6 +41,16 @@ enum AgentKind: Equatable {
 /// Inspects the process tree below a shell PID to find known AI agents.
 class AgentDetector {
 
+    /// Cache of parent→children mappings to avoid repeated sysctl calls.
+    private var cachedChildren: [pid_t: [pid_t]] = [:]
+    private var cacheTimestamp: Date = .distantPast
+    private let cacheTTL: TimeInterval = 2.0
+
+    func clearCache() {
+        cachedChildren.removeAll()
+        cacheTimestamp = .distantPast
+    }
+
     /// Process name -> agent kind for direct binary matches.
     private static let knownBinaries: [(String, AgentKind)] = [
         ("claude", .claude),
@@ -116,8 +126,15 @@ class AgentDetector {
     }
 
     /// Get direct child PIDs of a process using sysctl KERN_PROC.
+    /// Results are cached for `cacheTTL` seconds to avoid repeated sysctl calls
+    /// when scanning multiple sessions in the same tick.
     private func childPids(of parentPid: pid_t) -> [pid_t] {
-        // Use sysctl to get all processes, then filter by ppid
+        // Return cached result if still fresh
+        if Date().timeIntervalSince(cacheTimestamp) < cacheTTL, let cached = cachedChildren[parentPid] {
+            return cached
+        }
+
+        // Cache is stale — rebuild the complete parent→children map
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
         var size: Int = 0
         guard sysctl(&mib, 4, nil, &size, nil, 0) == 0, size > 0 else { return [] }
@@ -127,13 +144,17 @@ class AgentDetector {
         guard sysctl(&mib, 4, &procs, &size, nil, 0) == 0 else { return [] }
 
         let actualCount = size / MemoryLayout<kinfo_proc>.stride
-        var children: [pid_t] = []
+
+        // Build complete mapping
+        cachedChildren.removeAll()
         for i in 0..<actualCount {
-            if procs[i].kp_eproc.e_ppid == parentPid {
-                children.append(procs[i].kp_proc.p_pid)
-            }
+            let p = procs[i]
+            let parent = p.kp_eproc.e_ppid
+            let child = p.kp_proc.p_pid
+            cachedChildren[parent, default: []].append(child)
         }
-        return children
+        cacheTimestamp = Date()
+        return cachedChildren[parentPid] ?? []
     }
 
     /// Get the short process name (max 32 chars) via proc_name.
@@ -214,7 +235,7 @@ class AgentMonitor {
 
     func start() {
         guard timer == nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.scan()
         }
     }
@@ -230,6 +251,7 @@ class AgentMonitor {
     }
 
     private func scan() {
+        detector.clearCache()
         for session in sessions {
             let pid = session.terminalView.process?.shellPid ?? 0
             let (agent, agentPid) = detector.detect(shellPid: pid)

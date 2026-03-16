@@ -36,6 +36,7 @@ class APIKeyStore {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: envVar,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
@@ -55,6 +56,7 @@ class APIKeyStore {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: envVar,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
         let update: [String: Any] = [kSecValueData as String: data]
         let status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
@@ -62,6 +64,7 @@ class APIKeyStore {
         if status == errSecItemNotFound {
             var add = query
             add[kSecValueData as String] = data
+            add[kSecAttrLabel as String] = "Crystl - \(envVar)"
             SecItemAdd(add as CFDictionary, nil)
         }
     }
@@ -72,6 +75,7 @@ class APIKeyStore {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: envVar,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
         ]
         SecItemDelete(query as CFDictionary)
     }

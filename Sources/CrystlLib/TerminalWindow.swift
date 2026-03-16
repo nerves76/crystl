@@ -977,11 +977,20 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         }
     }
 
+    // MARK: - Observer Cleanup
+
+    /// Remove all KVO observers to prevent leaks on window close or app termination.
+    func cleanupAllObservers() {
+        scrollerObservers.removeAll()
+        backgroundObservers.removeAll()
+    }
+
     // MARK: - Window Close Animation
 
     private var isAnimatingClose = false
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        cleanupAllObservers()
         if isAnimatingClose { return true }
         guard let contentView = sender.contentView else { return true }
         contentView.wantsLayer = true

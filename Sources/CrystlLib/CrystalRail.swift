@@ -40,6 +40,7 @@ class RailTileView: NSView {
     private var shimmerLayer: CAGradientLayer?
     private var hoverShimmerLayer: CAGradientLayer?
     private var isPulsing = false
+    private var pulseTimeoutWork: DispatchWorkItem?
     private var badgeLabel: NSTextField?
     private var trackingArea: NSTrackingArea?
 
@@ -177,29 +178,29 @@ class RailTileView: NSView {
         isPulsing = true
         guard let layer = self.layer else { return }
 
-        // Pulsing border glow
+        // Pulsing border glow (capped repeat count)
         let borderPulse = CABasicAnimation(keyPath: "borderColor")
         borderPulse.fromValue = tile.color.withAlphaComponent(0.3).cgColor
         borderPulse.toValue = tile.color.withAlphaComponent(0.9).cgColor
         borderPulse.duration = 1.0
         borderPulse.autoreverses = true
-        borderPulse.repeatCount = .infinity
+        borderPulse.repeatCount = 10
         borderPulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         layer.borderWidth = 1.5
         layer.borderColor = tile.color.withAlphaComponent(0.6).cgColor
         layer.add(borderPulse, forKey: "pendingBorderPulse")
 
-        // Subtle scale pulse
+        // Subtle scale pulse (capped repeat count)
         let scalePulse = CABasicAnimation(keyPath: "transform.scale")
         scalePulse.fromValue = 1.0
         scalePulse.toValue = 1.06
         scalePulse.duration = 1.0
         scalePulse.autoreverses = true
-        scalePulse.repeatCount = .infinity
+        scalePulse.repeatCount = 10
         scalePulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
         layer.add(scalePulse, forKey: "pendingScalePulse")
 
-        // Shimmer sweep (looping)
+        // Shimmer sweep (capped repeat count)
         let shimmer = CAGradientLayer()
         shimmer.frame = bounds
         shimmer.type = .axial
@@ -219,24 +220,34 @@ class RailTileView: NSView {
         sweep.fromValue = -1.0
         sweep.toValue = 2.0
         sweep.duration = 2.0
-        sweep.repeatCount = .infinity
+        sweep.repeatCount = 15
         sweep.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1.0)
 
         let sweepEnd = CABasicAnimation(keyPath: "endPoint.x")
         sweepEnd.fromValue = 0.0
         sweepEnd.toValue = 3.0
         sweepEnd.duration = 2.0
-        sweepEnd.repeatCount = .infinity
+        sweepEnd.repeatCount = 15
         sweepEnd.timingFunction = CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1.0)
 
         shimmer.add(sweep, forKey: "shimmerSweep")
         shimmer.add(sweepEnd, forKey: "shimmerSweepEnd")
         layer.addSublayer(shimmer)
         shimmerLayer = shimmer
+
+        // Safety timeout — stop pulse after 30 seconds to prevent indefinite animation
+        pulseTimeoutWork?.cancel()
+        let timeout = DispatchWorkItem { [weak self] in
+            self?.stopPulse()
+        }
+        pulseTimeoutWork = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: timeout)
     }
 
     private func stopPulse() {
         isPulsing = false
+        pulseTimeoutWork?.cancel()
+        pulseTimeoutWork = nil
         layer?.removeAnimation(forKey: "pendingBorderPulse")
         layer?.removeAnimation(forKey: "pendingScalePulse")
         layer?.borderWidth = tile.isSelected ? 1.5 : 0.5

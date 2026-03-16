@@ -78,7 +78,8 @@ class TabBarView: NSView {
                     self.glowIntensity = min(1.0, self.glowIntensity + 0.05)
                 } else {
                     self.glowIntensity = max(0.0, self.glowIntensity - 0.02)
-                    if self.glowIntensity <= 0 {
+                    if self.glowIntensity < 0.01 {
+                        self.glowIntensity = 0
                         self.shimmerTimer?.invalidate()
                         self.shimmerTimer = nil
                     }
