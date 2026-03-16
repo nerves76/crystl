@@ -23,7 +23,10 @@ CrystalRail.swift       Screen-edge glass rail: tiles, add button, new gem panel
 GitWorktree.swift       Git worktree management for isolated shards
 DirectoryPicker.swift   Warp-style directory chooser overlay for new tabs
 CommandHistory.swift    Shell integration (ZDOTDIR injection) + OSC 7770 command logger + API key injection
-SettingsView.swift      Settings panel, GlassToggle, StarterEditorPanel
+SettingsView.swift      Settings panel (sidebar nav, 7 pages), GlassToggle, StarterEditorPanel
+LicenseManager.swift    License validation, Guild membership tier
+ShardPickerView.swift   Shard picker overlay for split panes
+SplitViewController.swift  Split pane layout controller
 APIKeyStore.swift       Secure API key storage via macOS Keychain
 ProjectConfig.swift     Per-project config (.crystl/project.json): name, icon, color
 MCPConfig.swift         MCP server catalog management
@@ -114,6 +117,19 @@ Clicking on a file path in the terminal opens it in the system default editor.
 - Drag of 3+ pixels cancels the click (text selection)
 - Double/triple clicks are ignored (word/line selection)
 
+### Settings Sidebar
+
+Settings uses a Warp-style sidebar navigation with 7 pages: **General**, **Claude**, **Codex**, **MCP Servers**, **Starter Files**, **API Keys**, **License**.
+
+- Sidebar width: 200px, top padding 52px (clears traffic lights)
+- Content area: top padding 100px (below "Settings" title)
+- Each page built by `build{Page}Page()` returning an NSView inside a scroll view
+- `finalizeDocView()` trims doc views and pins content at top
+
+### Guild Membership
+
+The paid tier is called **Guild**. Status bar shows "GUILD" or "FREE". License page shows "GUILD MEMBER" when active. The API Keys page shows a "Join the Guild!" callout box (outlined border, diamond bullet list of benefits) when unlicensed.
+
 ### API Keys
 
 API keys for AI providers are stored securely in macOS Keychain and injected as environment variables into every new terminal session.
@@ -134,9 +150,9 @@ API keys for AI providers are stored securely in macOS Keychain and injected as 
 
 ### GlassToggle
 
-`GlassToggle` is a custom iOS-style toggle switch used for the Claude/Codex enable toggles in settings.
+`GlassToggle` is a custom iOS-style toggle switch used for toggles in settings.
 
-- Rounded track: green (`rgba(0.3, 0.7, 0.45, 0.6)`) when on, glass (`white alpha 0.12`) when off
+- Rounded track: icy blue (`rgba(0.55, 0.72, 0.85, 0.6)`) when on, glass (`white alpha 0.12`) when off
 - White circular knob slides with 0.2s ease animation
 - Label text to the right of the track
 - `mouseDown` toggles state and fires target/action
@@ -152,11 +168,12 @@ Icon data lives in `LucideIconData.swift` as SVG inner elements. `LucideIcons.sw
 
 ## File Size Limits
 
-Keep source files under **500 lines**. `TabBarView.swift`, `SettingsView.swift`, `TerminalSession.swift` have been split out. Remaining violations:
+Keep source files under **500 lines**. Current violations:
 
-- `TerminalWindow.swift` — split out: terminal config/appearance helpers
-- `AppDelegate.swift` — split out: `ApprovalPanel.swift`, shared animation code
-- `CrystalRail.swift` — acceptable for now, tightly coupled classes
+- `SettingsView.swift` (2,045 lines) — split out: per-page builders into separate files
+- `AppDelegate.swift` (1,429 lines) — split out: `ApprovalPanel.swift`, shared animation code
+- `CrystalRail.swift` (1,403 lines) — split out: `NewProjectPanel`, tile management
+- `TerminalWindow.swift` (1,091 lines) — split out: terminal config/appearance helpers
 
 ## Code Conventions
 
@@ -238,6 +255,8 @@ The New Gem panel (from rail "+" or "Gem Settings" button) includes:
 - `projectsDirectory` — UserDefaults. Base directory for new gems. Default: `~/Projects`.
 - `gitRemoteBaseUrl` — UserDefaults. Base URL for git remotes (e.g. `git@github.com:user/`). Auto-fills remote field in New Gem panel as `{baseUrl}{name}.git`.
 - `agentEnabled:claude` / `agentEnabled:codex` — UserDefaults (Bool). Enable/disable agent sections in settings. Claude defaults to `true`, Codex to `false`. Uses `GlassToggle` UI.
+- `crystalRailEnabled` — UserDefaults (Bool). Show/hide the Crystal Rail. Default: `true`.
+- `notificationsEnabled` — UserDefaults (Bool). Show/hide floating notification panels. Default: `true`.
 - API keys — Keychain (`com.crystl.api-keys`). `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`. Injected into terminal sessions via `ShellIntegration.environment()`.
 - Bridge port `19280` — hardcoded in AppDelegate and build.sh.
 - Shell prompt is not overridden — user's own zsh config applies.
