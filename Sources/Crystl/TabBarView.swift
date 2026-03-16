@@ -53,6 +53,41 @@ class TabBarView: NSView {
     private let hoverLabel = HoverLabel()
     private var hoverTrackingArea: NSTrackingArea?
     private let tabSpacing: CGFloat = 2
+    private var shimmerTimer: Timer?
+    private var shimmerPhase: CGFloat = 0
+    private var shimmerColor: NSColor = .white
+    private var isAgentActive = false
+    private var glowIntensity: CGFloat = 0  // 0 = off, 1 = full
+
+    /// Enable or disable the agent glow animation on the separator line.
+    func setAgentActive(_ active: Bool, color: NSColor = .white) {
+        shimmerColor = color
+        let wasActive = isAgentActive
+        isAgentActive = active
+
+        if active && shimmerTimer == nil {
+            // Start the render timer
+            shimmerPhase = 0
+            shimmerTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+                guard let self = self else { return }
+                self.shimmerPhase += 0.008
+                if self.shimmerPhase > 1.0 { self.shimmerPhase -= 1.0 }
+
+                // Fade intensity toward target
+                if self.isAgentActive {
+                    self.glowIntensity = min(1.0, self.glowIntensity + 0.05)
+                } else {
+                    self.glowIntensity = max(0.0, self.glowIntensity - 0.02)
+                    if self.glowIntensity <= 0 {
+                        self.shimmerTimer?.invalidate()
+                        self.shimmerTimer = nil
+                    }
+                }
+                self.needsDisplay = true
+            }
+        }
+        // If turning off, don't kill the timer — let it fade out
+    }
 
     private func computeTabWidth() -> CGFloat {
         let available = bounds.width - leftInset - 20
@@ -67,6 +102,20 @@ class TabBarView: NSView {
         // Separator line at bottom
         NSColor(white: 1.0, alpha: 0.25).setFill()
         NSBezierPath.fill(NSRect(x: 0, y: 0, width: bounds.width, height: 0.5))
+
+        // Agent glow — white line pulses, brighter in center, fades in/out
+        if glowIntensity > 0 {
+            let pulse = (1.0 - cos(shimmerPhase * .pi * 2)) / 2.0
+            let i = glowIntensity
+            let peakAlpha = (0.3 + pulse * 0.7) * i
+            let edgeAlpha = (0.05 + pulse * 0.15) * i
+            let gradient = NSGradient(colorsAndLocations:
+                (NSColor.white.withAlphaComponent(edgeAlpha), 0.0),
+                (NSColor.white.withAlphaComponent(peakAlpha), 0.5),
+                (NSColor.white.withAlphaComponent(edgeAlpha), 1.0)
+            )
+            gradient?.draw(in: NSRect(x: 0, y: 0, width: bounds.width, height: 1.5), angle: 0)
+        }
 
         let tabW = computeTabWidth()
         let h: CGFloat = 26
@@ -190,6 +239,8 @@ class SessionBarView: NSView, NSTextFieldDelegate {
     var onAddIsolatedSession: (() -> Void)?
     var onRenameSession: ((Int, String) -> Void)?
     var onCloseSession: ((Int) -> Void)?
+    var onSplitPane: (() -> Void)?
+    var visibleSessionIndices: Set<Int> = []
     private let headerInset: CGFloat = 14
     private let leftInset: CGFloat = 85  // after "SHARDS" label
     private let pillSpacing: CGFloat = 4
@@ -219,10 +270,17 @@ class SessionBarView: NSView, NSTextFieldDelegate {
 
             let gemColor = session.crystalColor
 
+            // Visible-in-pane indicator (when split and this shard is showing)
+            let isVisible = visibleSessionIndices.contains(i)
+
             if isSelected {
                 // Crystal color accent underline
                 gemColor.withAlphaComponent(0.6).setFill()
                 NSBezierPath.fill(NSRect(x: x + 8, y: y, width: pillWidth - 16, height: 2))
+            } else if isVisible {
+                // Dimmer underline for visible-but-not-focused pane
+                gemColor.withAlphaComponent(0.3).setFill()
+                NSBezierPath.fill(NSRect(x: x + 8, y: y, width: pillWidth - 16, height: 1.5))
             }
 
             // Session name (skip if editing)
@@ -250,11 +308,22 @@ class SessionBarView: NSView, NSTextFieldDelegate {
         let plusSize = plusStr.size(withAttributes: plusAttrs)
         plusStr.draw(at: NSPoint(x: plusX, y: (bounds.height - plusSize.height) / 2), withAttributes: plusAttrs)
 
+        // Split button — always visible
+        let splitBtnX = plusX + plusSize.width + 12
+        let splitAlpha: CGFloat = sessions.count >= 2 ? 0.8 : 0.35
+        let splitAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 16, weight: .regular),
+            .foregroundColor: NSColor.white.withAlphaComponent(splitAlpha)
+        ]
+        let splitStr = "\u{25EB}" as NSString  // ◫ split icon
+        let splitSize = splitStr.size(withAttributes: splitAttrs)
+        splitStr.draw(at: NSPoint(x: splitBtnX, y: (bounds.height - splitSize.height) / 2), withAttributes: splitAttrs)
+
         // Hint — right-aligned, hidden when shards would overlap
         let hint = "\u{2325}+ isolated shard" as NSString
         let hintAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 9, weight: .regular),
-            .foregroundColor: NSColor(white: 1.0, alpha: 0.2)
+            .foregroundColor: NSColor(white: 1.0, alpha: 0.5)
         ]
         let hintSize = hint.size(withAttributes: hintAttrs)
         let hintX = bounds.width - hintSize.width - 14
@@ -281,12 +350,23 @@ class SessionBarView: NSView, NSTextFieldDelegate {
 
         // "+" button — Option+click for isolated (worktree) session
         let plusX = leftInset + CGFloat(sessions.count) * (pillWidth + pillSpacing) + 4
-        if loc.x >= plusX - 4 && loc.x <= plusX + 24 {
+        let plusClickAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 14, weight: .ultraLight)
+        ]
+        let plusClickW = ("+".size(withAttributes: plusClickAttrs)).width
+        if loc.x >= plusX - 4 && loc.x <= plusX + plusClickW + 4 {
             if event.modifierFlags.contains(.option) {
                 onAddIsolatedSession?()
             } else {
                 onAddSession?()
             }
+            return
+        }
+
+        // Split button
+        let splitBtnX = plusX + plusClickW + 12
+        if loc.x >= splitBtnX - 4 && loc.x <= splitBtnX + 20 {
+            onSplitPane?()
             return
         }
 

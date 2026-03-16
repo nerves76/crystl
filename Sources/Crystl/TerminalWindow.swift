@@ -16,7 +16,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
     var tabBar: TabBarView!
     var sessionBar: SessionBarView!
     private var sessionBarHeight: CGFloat = 28
-    var onProcessFinished: ((String, String) -> Void)?
+    var onProcessFinished: ((String, String, String) -> Void)?
     var onModeChanged: ((String) -> Void)?
     var onClaudeModeChanged: ((String) -> Void)?
     var onPauseToggled: ((Bool) -> Void)?
@@ -26,7 +26,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
     var onTabUpdated: ((UUID, String, String) -> Void)?
     var contentArea: NSView!
     var projectLabel: NSTextField!
-    var claudeModePopup: NSPopUpButton!
+    var claudeModePopup: NSPopUpButton?
     var projects: [ProjectTab] = []
     var selectedProjectIndex: Int = 0
     private var colorIndex = 0
@@ -58,6 +58,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
     private var clickMonitor: Any?
     private var clickDidDrag = false
     private var clickDownPoint: NSPoint?
+    var splitController: SplitViewController?
 
     // Convenience accessors
     var selectedProject: ProjectTab? {
@@ -148,6 +149,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         sessionBar.onAddSession = { [weak self] in self?.addSessionToCurrentProject() }
         sessionBar.onAddIsolatedSession = { [weak self] in self?.addSessionToCurrentProject(isolated: true) }
         sessionBar.onRenameSession = { [weak self] idx, name in self?.renameSession(idx, name: name) }
+        sessionBar.onSplitPane = { [weak self] in self?.splitFocusedPane() }
         container.addSubview(sessionBar)
 
         // Crystal icon settings button
@@ -223,6 +225,17 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         projectLabel.frame = NSRect(x: 24, y: 20, width: 188, height: 16)
         statusBar.addSubview(projectLabel)
 
+        // Tier label (FREE / GUILD)
+        let tierText = LicenseManager.shared.tier == .pro ? "GUILD" : "FREE"
+        let tierColor = LicenseManager.shared.tier == .pro
+            ? NSColor(red: 0.55, green: 0.75, blue: 0.95, alpha: 0.6)
+            : NSColor(white: 1.0, alpha: 0.25)
+        let tierLabel = NSTextField(labelWithString: tierText)
+        tierLabel.font = NSFont.systemFont(ofSize: 8, weight: .bold)
+        tierLabel.textColor = tierColor
+        tierLabel.frame = NSRect(x: 24, y: 40, width: 30, height: 10)
+        statusBar.addSubview(tierLabel)
+
         // Invisible button on top of label to catch clicks
         let pathBtn = NSButton(frame: NSRect(x: 16, y: 16, width: 200, height: 28))
         pathBtn.title = ""
@@ -231,45 +244,6 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         pathBtn.target = self
         pathBtn.action = #selector(pathButtonClicked)
         statusBar.addSubview(pathBtn)
-
-        // ── Claude Mode section (right) — hidden until Claude is detected ──
-        let claudeLabel = NSTextField(labelWithString: "CLAUDE MODE")
-        claudeLabel.font = labelFont
-        claudeLabel.textColor = labelColor
-        claudeLabel.frame = NSRect(x: windowWidth - 154, y: 48, width: 80, height: 12)
-        claudeLabel.autoresizingMask = [.minXMargin]
-        claudeLabel.isHidden = true
-        statusBar.addSubview(claudeLabel)
-        self.claudeModeLabel = claudeLabel
-
-        let popupBg = NSView(frame: NSRect(x: windowWidth - 148, y: 20, width: 124, height: 18))
-        popupBg.wantsLayer = true
-        popupBg.layer?.cornerRadius = 6
-        popupBg.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.15).cgColor
-        popupBg.layer?.borderWidth = 0.5
-        popupBg.layer?.borderColor = NSColor(white: 1.0, alpha: 0.25).cgColor
-        popupBg.autoresizingMask = [.minXMargin]
-        popupBg.isHidden = true
-        statusBar.addSubview(popupBg)
-        self.claudeModeBg = popupBg
-
-        claudeModePopup = NSPopUpButton(frame: NSRect(x: windowWidth - 147, y: 18, width: 122, height: 22))
-        claudeModePopup.addItems(withTitles: ["plan", "default", "acceptEdits", "bypassPermissions", "auto"])
-        claudeModePopup.selectItem(withTitle: "default")
-        claudeModePopup.font = NSFont.monospacedSystemFont(ofSize: 10, weight: .regular)
-        claudeModePopup.controlSize = .small
-        claudeModePopup.isBordered = false
-        claudeModePopup.isTransparent = false
-        claudeModePopup.wantsLayer = true
-        claudeModePopup.layer?.backgroundColor = NSColor.clear.cgColor
-        claudeModePopup.appearance = NSAppearance(named: .darkAqua)
-        (claudeModePopup.cell as? NSButtonCell)?.backgroundColor = .clear
-        claudeModePopup.target = self
-        claudeModePopup.action = #selector(claudeModeChanged(_:))
-        (claudeModePopup.cell as? NSPopUpButtonCell)?.arrowPosition = .arrowAtBottom
-        claudeModePopup.autoresizingMask = [.minXMargin]
-        claudeModePopup.isHidden = true
-        statusBar.addSubview(claudeModePopup)
 
         // ── Codex Mode section (right) — hidden until Codex is detected ──
         let codexLabel = NSTextField(labelWithString: "CODEX")
@@ -306,6 +280,17 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         contentArea.autoresizingMask = [.width, .height]
         container.addSubview(contentArea)
 
+        // Split controller
+        let sc = SplitViewController()
+        sc.contentArea = contentArea
+        sc.onFocusChanged = { [weak self] in
+            self?.updateSessionBar()
+            self?.updateAgentUI()
+        }
+        sc.onNewSession = { [weak self] in self?.addSessionToCurrentProject() }
+        sc.onNewIsolatedSession = { [weak self] in self?.addSessionToCurrentProject(isolated: true) }
+        splitController = sc
+
         // Inset frost border — topmost subview, covers entire container
         let frost = InsetFrostView(frame: container.bounds)
         frost.cornerRadius = 16
@@ -321,10 +306,11 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         monitor.sessions = tabs
         monitor.onAgentChanged = { [weak self] sessionId, agent in
             guard let self = self else { return }
-            // If the changed session is the active one, update UI
-            if self.selectedSession?.id == sessionId {
-                self.updateAgentUI()
-            }
+            self.updateAgentUI()
+        }
+        monitor.onAgentWorkingChanged = { [weak self] sessionId, working in
+            guard let self = self else { return }
+            self.updateAgentUI()
         }
         monitor.start()
         self.agentMonitor = monitor
@@ -435,6 +421,11 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
     }
 
     func addProject(cwd: String = NSHomeDirectory()) {
+        let lm = LicenseManager.shared
+        if lm.tier == .free && projects.count >= LicenseManager.freeGemLimit {
+            showUpgradePrompt("Unlock unlimited gems with a Crystl Pro license.")
+            return
+        }
         let project = ProjectTab(directory: cwd, color: nextColor())
         if cwd == NSHomeDirectory() { project.isUnconfigured = true }
         guard let session = project.addSession(frame: contentArea.bounds).session else { return }
@@ -529,6 +520,15 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
 
     func addSessionToCurrentProject(isolated: Bool = false) {
         guard let project = selectedProject else { return }
+        let lm = LicenseManager.shared
+        if lm.tier == .free && project.sessions.count >= LicenseManager.freeShardLimit {
+            showUpgradePrompt("Unlock multiple shards with a Crystl Pro license.")
+            return
+        }
+        if isolated && !lm.isFeatureAvailable(.isolatedShards) {
+            showUpgradePrompt("Isolated shards require a Crystl Pro license.")
+            return
+        }
         let result = project.addSession(frame: contentArea.bounds, isolated: isolated)
 
         let session: TerminalSession
@@ -574,9 +574,23 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         session.terminalView.feed(text: "\r\n\u{001B}[31m✗ \(message)\u{001B}[0m\r\n")
     }
 
+    func showUpgradePrompt(_ message: String) {
+        guard let session = selectedProject?.selectedSession else { return }
+        session.terminalView.feed(text: "\r\n\u{001B}[33m\u{25C6} \(message)\u{001B}[0m\r\n")
+    }
+
     func selectSession(_ sessionIndex: Int) {
         guard let project = selectedProject,
               sessionIndex >= 0 && sessionIndex < project.sessions.count else { return }
+
+        // If split mode, swap session into focused pane (or focus its pane)
+        if let sc = splitController, sc.isSplit {
+            sc.swapSessionIntoFocusedPane(sessionIndex, project: project)
+            updateSessionBar()
+            updateWindowTitle()
+            updateAgentUI()
+            return
+        }
 
         if let current = project.selectedSession {
             current.terminalView.isHidden = true
@@ -605,6 +619,11 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         guard let project = selectedProject,
               project.sessions.count > 1 && sessionIndex < project.sessions.count else { return }
 
+        // If split, collapse first
+        if let sc = splitController, sc.isSplit {
+            sc.unsplit(project: project)
+        }
+
         let session = project.sessions[sessionIndex]
         session.cleanupWorktree()
         backgroundObservers.removeValue(forKey: session.id)
@@ -612,15 +631,38 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         session.terminalView.removeFromSuperview()
         project.sessions.remove(at: sessionIndex)
 
-        if project.selectedSessionIndex >= project.sessions.count {
-            project.selectedSessionIndex = project.sessions.count - 1
-        } else if project.selectedSessionIndex > sessionIndex {
-            project.selectedSessionIndex -= 1
-        }
+        // Fix pane state after removal
+        project.panes = [PaneState(sessionIndex: min(project.panes[0].sessionIndex ?? 0, project.sessions.count - 1), isFocused: true)]
+        project.splitLayout = .single
 
         selectSession(project.selectedSessionIndex)
         updateSessionBar()
         refreshMonitorSessions()
+    }
+
+    // MARK: - Split Pane
+
+    func splitFocusedPane() {
+        guard let project = selectedProject else { return }
+        // Auto-create a second shard if needed
+        if project.sessions.count < 2 {
+            addSessionToCurrentProject()
+            guard project.sessions.count >= 2 else { return }
+        }
+
+        if let sc = splitController, sc.isSplit {
+            // Already split — collapse
+            sc.unsplit(project: project)
+        } else {
+            splitController?.split(project: project)
+        }
+        updateSessionBar()
+    }
+
+    func closeFocusedPane() {
+        guard let project = selectedProject else { return }
+        splitController?.closeFocusedPane(project: project)
+        updateSessionBar()
     }
 
     // MARK: - Project Selection
@@ -628,14 +670,22 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
     func selectProject(_ index: Int) {
         guard index >= 0 && index < projects.count else { return }
 
-        if let currentSession = selectedProject?.selectedSession {
-            currentSession.terminalView.isHidden = true
+        // Tear down split from current project
+        if let oldProject = selectedProject {
+            splitController?.tearDown()
+            // Hide all terminals in old project
+            for session in oldProject.sessions {
+                session.terminalView.isHidden = true
+            }
         }
 
         selectedProjectIndex = index
         let project = projects[index]
 
-        if let session = project.selectedSession {
+        // Restore split if this project was split
+        if project.splitLayout == .horizontal {
+            splitController?.restore(project: project)
+        } else if let session = project.selectedSession {
             session.terminalView.isHidden = false
             session.terminalView.frame = contentArea.bounds
             window.makeFirstResponder(session.terminalView)
@@ -654,6 +704,11 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
 
         let project = projects[index]
         let projectId = project.id
+
+        // Tear down split if this project is split
+        if index == selectedProjectIndex {
+            splitController?.tearDown()
+        }
 
         // Clean up all sessions
         for session in project.sessions {
@@ -690,6 +745,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         sessionBar.sessions = project.sessions
         sessionBar.selectedIndex = project.selectedSessionIndex
         sessionBar.projectColor = project.color
+        sessionBar.visibleSessionIndices = project.splitLayout == .horizontal ? project.visibleSessionIndices : []
         sessionBar.isHidden = false
         sessionBar.needsDisplay = true
     }
@@ -708,14 +764,15 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         let isClaude = agent == .claude
         let isCodex = agent == .codex
 
-        claudeModeLabel?.isHidden = !isClaude
-        claudeModeBg?.isHidden = !isClaude
-        claudeModePopup.isHidden = !isClaude
-
         codexModeLabel?.isHidden = !isCodex
         codexModeBg?.isHidden = !isCodex
 
         frostView?.setGlowing(agent.isAgent)
+
+        // Shimmer on tab bar separator when ANY session's agent is actively working
+        let anyWorking = tabs.contains { $0.isAgentWorking }
+        let shimmerColor = selectedProject?.color ?? .white
+        tabBar.setAgentActive(anyWorking, color: shimmerColor)
     }
 
     private func refreshMonitorSessions() {
@@ -839,6 +896,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
     var onOpacityChanged: ((CGFloat) -> Void)?
     var settingsView: NSView?
     var isShowingSettings = false
+    var settingsSelectedPage: SettingsPage = .general
 
     @objc func settingsButtonClicked() {
         if isShowingSettings { flipToTerminal() } else { flipToSettings() }
@@ -906,7 +964,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
 
     func setClaudeMode(_ mode: String) {
         currentClaudeMode = mode
-        claudeModePopup.selectItem(withTitle: mode)
+        claudeModePopup?.selectItem(withTitle: mode)
         onClaudeModeChanged?(mode)
     }
 
@@ -915,7 +973,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         isPaused = paused
         if let cm = claudeMode {
             currentClaudeMode = cm
-            claudeModePopup.selectItem(withTitle: cm)
+            claudeModePopup?.selectItem(withTitle: cm)
         }
     }
 
@@ -1016,7 +1074,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
             for (pi, project) in self.projects.enumerated() {
                 if let si = project.sessions.firstIndex(where: { $0.terminalView === lpv }) {
                     let session = project.sessions[si]
-                    self.onProcessFinished?(project.title, session.cwd)
+                    self.onProcessFinished?(project.title, session.cwd, session.name)
 
                     if project.sessions.count > 1 {
                         self.closeSession(si)

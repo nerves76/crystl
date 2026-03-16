@@ -73,8 +73,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Launch terminal window
         terminalController = TerminalWindowController()
-        terminalController.onProcessFinished = { [weak self] title, cwd in
-            self?.showProcessFinishedCard(tabTitle: title, cwd: cwd)
+        terminalController.onProcessFinished = { [weak self] title, cwd, shardName in
+            self?.showProcessFinishedCard(tabTitle: title, cwd: cwd, shardName: shardName)
         }
         terminalController.onModeChanged = { [weak self] mode in
             self?.updateBridgeSettings(["autoApproveMode": mode])
@@ -143,6 +143,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             r.selectTile(tabId: firstProject.id)
         }
         rail = r
+
+        // Hide rail if disabled in settings
+        let railEnabled = UserDefaults.standard.object(forKey: "crystalRailEnabled") as? Bool ?? true
+        if !railEnabled {
+            r.panel.orderOut(nil)
+        }
 
         // Sync rail opacity with saved slider value
         let savedOpacity = UserDefaults.standard.double(forKey: "windowOpacity")
@@ -844,8 +850,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             dismissNotificationPanel(id: id)
         }
 
-        // Show panels for new notifications
+        // Show panels for new notifications (if enabled)
+        let notifsEnabled = UserDefaults.standard.object(forKey: "notificationsEnabled") as? Bool ?? true
         for notif in incoming where !knownNotificationIds.contains(notif.id) {
+            guard notifsEnabled else { continue }
             // Cap at 4 — dismiss oldest to make room
             if notificationPanels.count >= 4, let oldestId = notificationPanels.keys.first {
                 dismissNotificationOnBridge(id: oldestId)
@@ -909,8 +917,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             glass.addSubview(nameLabel)
         }
 
-        // Headline — colored subtitle (like tool name on approval panels)
-        let headlineLabel = NSTextField(labelWithString: notif.headline)
+        // Headline — colored subtitle with shard name prefix
+        let shardName: String? = {
+            let matchedProject = terminalController.projects.first(where: { $0.directory == cwd })
+                ?? terminalController.projects.first(where: { cwd.hasPrefix($0.directory) || $0.directory.hasPrefix(cwd) })
+            if let project = matchedProject {
+                // Match session by cwd (exact or worktree path)
+                if let session = project.sessions.first(where: { $0.cwd == cwd || $0.worktreePath == cwd }) {
+                    return session.name
+                }
+                // Fall back to selected session
+                return project.selectedSession?.name
+            }
+            return nil
+        }()
+        let headlineText = shardName != nil ? "\(shardName!): \(notif.headline)" : notif.headline
+        let headlineLabel = NSTextField(labelWithString: headlineText)
         headlineLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
         headlineLabel.textColor = sessColor.withAlphaComponent(0.8)
         let headlineY = tabName.isEmpty ? cardHeight - 30 : cardHeight - 50
@@ -1078,7 +1100,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Small card shown at the top-left when a terminal process exits.
     // Persists until manually dismissed via the X button.
 
-    func showProcessFinishedCard(tabTitle: String, cwd: String) {
+    func showProcessFinishedCard(tabTitle: String, cwd: String, shardName: String) {
         let cardWidth: CGFloat = 300
         let cardHeight: CGFloat = 60
 
@@ -1099,7 +1121,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         titleLabel.frame = NSRect(x: 14, y: cardHeight - 26, width: cardWidth - 28, height: 18)
         glass.addSubview(titleLabel)
 
-        let subLabel = NSTextField(labelWithString: "Process finished")
+        let subLabel = NSTextField(labelWithString: "\(shardName): Process finished")
         subLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
         subLabel.textColor = NSColor(white: 1.0, alpha: 0.45)
         subLabel.frame = NSRect(x: 14, y: 10, width: cardWidth - 70, height: 16)
@@ -1372,11 +1394,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func closeTab() {
         let tc = terminalController!
+        // If split, close the focused pane first
+        if let sc = tc.splitController, sc.isSplit, let project = tc.selectedProject {
+            sc.closeFocusedPane(project: project)
+            tc.updateSessionBar()
+            return
+        }
         if tc.projects.count > 1 {
             tc.closeProject(tc.selectedProjectIndex)
         } else {
             tc.window.performClose(nil)
         }
+    }
+
+    @objc func splitPane() {
+        terminalController.splitFocusedPane()
     }
 
     @objc func selectNextTab() {

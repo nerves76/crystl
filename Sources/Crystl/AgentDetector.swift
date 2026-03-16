@@ -66,18 +66,29 @@ class AgentDetector {
 
     /// Detect which agent (if any) is running under the given shell PID.
     /// Checks direct children and grandchildren (depth 2).
-    func detect(shellPid: pid_t) -> AgentKind {
-        guard shellPid > 0 else { return .none }
+    /// Returns the agent kind and its PID.
+    func detect(shellPid: pid_t) -> (kind: AgentKind, pid: pid_t) {
+        guard shellPid > 0 else { return (.none, 0) }
 
         let children = childPids(of: shellPid)
         for child in children {
-            if let agent = identify(pid: child) { return agent }
+            if let agent = identify(pid: child) { return (agent, child) }
             // Check grandchildren (agents launched via wrapper scripts)
             for grandchild in childPids(of: child) {
-                if let agent = identify(pid: grandchild) { return agent }
+                if let agent = identify(pid: grandchild) { return (agent, grandchild) }
             }
         }
-        return .none
+        return (.none, 0)
+    }
+
+    /// Get total CPU time (user + system) in nanoseconds for a process.
+    func cpuTime(pid: pid_t) -> UInt64 {
+        guard pid > 0 else { return 0 }
+        var taskInfo = proc_taskinfo()
+        let size = Int32(MemoryLayout<proc_taskinfo>.size)
+        let result = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &taskInfo, size)
+        guard result == size else { return 0 }
+        return taskInfo.pti_total_user + taskInfo.pti_total_system
     }
 
     // MARK: - Process Inspection
@@ -104,19 +115,25 @@ class AgentDetector {
         return nil
     }
 
-    /// Get direct child PIDs of a process.
+    /// Get direct child PIDs of a process using sysctl KERN_PROC.
     private func childPids(of parentPid: pid_t) -> [pid_t] {
-        // First call with nil buffer to get count
-        let count = proc_listchildpids(parentPid, nil, 0)
-        guard count > 0 else { return [] }
+        // Use sysctl to get all processes, then filter by ppid
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0]
+        var size: Int = 0
+        guard sysctl(&mib, 4, nil, &size, nil, 0) == 0, size > 0 else { return [] }
 
-        let bufferSize = Int(count) * MemoryLayout<pid_t>.size
-        var pids = [pid_t](repeating: 0, count: Int(count))
-        let actual = proc_listchildpids(parentPid, &pids, Int32(bufferSize))
-        guard actual > 0 else { return [] }
+        let count = size / MemoryLayout<kinfo_proc>.stride
+        var procs = [kinfo_proc](repeating: kinfo_proc(), count: count)
+        guard sysctl(&mib, 4, &procs, &size, nil, 0) == 0 else { return [] }
 
-        let resultCount = Int(actual) / MemoryLayout<pid_t>.size
-        return Array(pids.prefix(resultCount)).filter { $0 > 0 }
+        let actualCount = size / MemoryLayout<kinfo_proc>.stride
+        var children: [pid_t] = []
+        for i in 0..<actualCount {
+            if procs[i].kp_eproc.e_ppid == parentPid {
+                children.append(procs[i].kp_proc.p_pid)
+            }
+        }
+        return children
     }
 
     /// Get the short process name (max 32 chars) via proc_name.
@@ -176,6 +193,7 @@ class AgentDetector {
 
 /// Periodically scans terminal sessions for running agents.
 /// Fires `onAgentChanged` when a session's detected agent changes.
+/// Tracks CPU time to distinguish idle agents from working ones.
 class AgentMonitor {
     private var timer: Timer?
     private let detector = AgentDetector()
@@ -185,6 +203,14 @@ class AgentMonitor {
 
     /// Called on main thread when a session's detected agent changes.
     var onAgentChanged: ((UUID, AgentKind) -> Void)?
+
+    /// Called when an agent's working state changes (idle vs actively processing).
+    var onAgentWorkingChanged: ((UUID, Bool) -> Void)?
+
+    /// Tracks per-session agent PID and last CPU time for activity detection.
+    private var agentPids: [UUID: pid_t] = [:]
+    private var lastCPUTime: [UUID: UInt64] = [:]
+    private var idleCount: [UUID: Int] = [:]
 
     func start() {
         guard timer == nil else { return }
@@ -206,10 +232,48 @@ class AgentMonitor {
     private func scan() {
         for session in sessions {
             let pid = session.terminalView.process?.shellPid ?? 0
-            let agent = detector.detect(shellPid: pid)
+            let (agent, agentPid) = detector.detect(shellPid: pid)
+
             if agent != session.detectedAgent {
                 session.detectedAgent = agent
+                agentPids[session.id] = agentPid
+                lastCPUTime[session.id] = 0
+                idleCount[session.id] = 0
                 onAgentChanged?(session.id, agent)
+            }
+
+            // Track CPU activity for detected agents
+            if agent.isAgent && agentPid > 0 {
+                let cpu = detector.cpuTime(pid: agentPid)
+                let prev = lastCPUTime[session.id] ?? 0
+                let wasWorking = session.isAgentWorking
+
+                if cpu > prev && prev > 0 {
+                    // CPU time increased — agent is working
+                    idleCount[session.id] = 0
+                    if !wasWorking {
+                        session.isAgentWorking = true
+                        onAgentWorkingChanged?(session.id, true)
+                    }
+                } else if prev > 0 {
+                    // CPU time unchanged — might be idle
+                    let count = (idleCount[session.id] ?? 0) + 1
+                    idleCount[session.id] = count
+                    // Wait 3 consecutive idle scans before declaring idle
+                    if count >= 3 && wasWorking {
+                        session.isAgentWorking = false
+                        onAgentWorkingChanged?(session.id, false)
+                    }
+                }
+                lastCPUTime[session.id] = cpu
+            } else {
+                if session.isAgentWorking {
+                    session.isAgentWorking = false
+                    onAgentWorkingChanged?(session.id, false)
+                }
+                agentPids.removeValue(forKey: session.id)
+                lastCPUTime.removeValue(forKey: session.id)
+                idleCount.removeValue(forKey: session.id)
             }
         }
     }

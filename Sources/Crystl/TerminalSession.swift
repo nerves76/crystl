@@ -249,25 +249,25 @@ class TerminalDropView: NSView {
 /// Session crystal names and their gem colors.
 let sessionCrystals: [(name: String, color: (r: CGFloat, g: CGFloat, b: CGFloat))] = [
     ("diamond",    (0.73, 0.84, 0.93)),  // icy blue-white
-    ("aquamarine", (0.50, 0.86, 0.84)),  // sea green
-    ("sapphire",   (0.36, 0.48, 0.85)),  // deep blue
-    ("tanzanite",  (0.55, 0.42, 0.78)),  // violet-blue
-    ("amethyst",   (0.68, 0.44, 0.72)),  // purple
-    ("emerald",    (0.31, 0.78, 0.47)),  // green
-    ("peridot",    (0.68, 0.82, 0.31)),  // yellow-green
-    ("citrine",    (0.90, 0.78, 0.30)),  // golden
-    ("carnelian",  (0.85, 0.45, 0.28)),  // red-orange
-    ("ruby",       (0.82, 0.22, 0.32)),  // red
-    ("garnet",     (0.70, 0.15, 0.22)),  // deep red
-    ("topaz",      (0.95, 0.65, 0.25)),  // amber
     ("opal",       (0.80, 0.72, 0.85)),  // iridescent lavender
     ("jade",       (0.40, 0.70, 0.45)),  // muted green
-    ("onyx",       (0.60, 0.60, 0.65)),  // dark grey
-    ("quartz",     (0.88, 0.75, 0.80)),  // rose pink
-    ("turquoise",  (0.30, 0.78, 0.76)),  // teal
     ("lapis",      (0.25, 0.35, 0.72)),  // deep blue
-    ("morganite",  (0.90, 0.68, 0.68)),  // peach pink
+    ("topaz",      (0.95, 0.65, 0.25)),  // amber
+    ("onyx",       (0.60, 0.60, 0.65)),  // dark grey
+    ("pearl",      (0.90, 0.88, 0.85)),  // warm white
+    ("amber",      (0.90, 0.78, 0.30)),  // golden
+    ("quartz",     (0.88, 0.75, 0.80)),  // rose pink
+    ("ruby",       (0.82, 0.22, 0.32)),  // red
+    ("garnet",     (0.70, 0.15, 0.22)),  // deep red
+    ("emerald",    (0.31, 0.78, 0.47)),  // green
+    ("cobalt",     (0.36, 0.48, 0.85)),  // deep blue
+    ("peridot",    (0.68, 0.82, 0.31)),  // yellow-green
     ("zircon",     (0.55, 0.75, 0.88)),  // sky blue
+    ("amethyst",   (0.68, 0.44, 0.72)),  // purple
+    ("tanzanite",  (0.55, 0.42, 0.78)),  // violet-blue
+    ("carnelian",  (0.85, 0.45, 0.28)),  // red-orange
+    ("turquoise",  (0.30, 0.78, 0.76)),  // teal
+    ("morganite",  (0.90, 0.68, 0.68)),  // peach pink
 ]
 
 /// A single terminal shell instance with metadata.
@@ -281,6 +281,7 @@ class TerminalSession {
     var cwd: String
     var historyLogger: CommandHistoryLogger?
     var detectedAgent: AgentKind = .none
+    var isAgentWorking: Bool = false
 
     /// If non-nil, this session runs in an isolated git worktree at this path.
     var worktreePath: String?
@@ -318,6 +319,20 @@ class TerminalSession {
     }
 }
 
+// ── Split Layout ──
+
+/// Layout mode for a gem's content area.
+enum SplitLayout {
+    case single
+    case horizontal  // side-by-side
+}
+
+/// State of a single pane in a split layout.
+struct PaneState {
+    var sessionIndex: Int?  // nil = showing shard picker
+    var isFocused: Bool
+}
+
 // ── Project Tab ──
 
 /// Groups one or more terminal sessions under a project directory.
@@ -328,14 +343,35 @@ class ProjectTab {
     var title: String
     var hasCustomTitle: Bool = false
     var sessions: [TerminalSession] = []
-    var selectedSessionIndex: Int = 0
     var color: NSColor
     var iconName: String?
     var isUnconfigured: Bool = false
 
+    // Split state
+    var splitLayout: SplitLayout = .single
+    var panes: [PaneState] = [PaneState(sessionIndex: 0, isFocused: true)]
+
+    /// Index of the focused pane.
+    var focusedPaneIndex: Int { panes.firstIndex(where: { $0.isFocused }) ?? 0 }
+
+    /// The selected session index (focused pane's session).
+    var selectedSessionIndex: Int {
+        get { panes[focusedPaneIndex].sessionIndex ?? 0 }
+        set {
+            let idx = focusedPaneIndex
+            if idx < panes.count { panes[idx].sessionIndex = newValue }
+        }
+    }
+
+    /// All session indices currently visible in split panes.
+    var visibleSessionIndices: Set<Int> {
+        Set(panes.compactMap { $0.sessionIndex })
+    }
+
     var selectedSession: TerminalSession? {
-        guard selectedSessionIndex >= 0 && selectedSessionIndex < sessions.count else { return nil }
-        return sessions[selectedSessionIndex]
+        let idx = selectedSessionIndex
+        guard idx >= 0 && idx < sessions.count else { return nil }
+        return sessions[idx]
     }
 
     init(directory: String, color: NSColor) {

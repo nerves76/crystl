@@ -46,6 +46,8 @@ let shellMenu = NSMenu(title: "Shell")
 shellMenu.addItem(item("New Tab", action: #selector(AppDelegate.newTab), key: "t"))
 shellMenu.addItem(item("Close Tab", action: #selector(AppDelegate.closeTab), key: "w"))
 shellMenu.addItem(NSMenuItem.separator())
+shellMenu.addItem(item("Split Pane", action: #selector(AppDelegate.splitPane), key: "d"))
+shellMenu.addItem(NSMenuItem.separator())
 shellMenu.addItem(item("Next Tab", action: #selector(AppDelegate.selectNextTab), key: "]", mods: [.command, .shift]))
 shellMenu.addItem(item("Previous Tab", action: #selector(AppDelegate.selectPreviousTab), key: "[", mods: [.command, .shift]))
 shellMenuItem.submenu = shellMenu

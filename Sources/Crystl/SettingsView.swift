@@ -1,9 +1,30 @@
-// SettingsView.swift — Settings panel with flip animation
+// SettingsView.swift — Settings panel with sidebar navigation
 //
-// Extracted from TerminalWindowController. Builds the settings view and
-// manages the flip transition between terminal and settings.
+// Contains:
+//   - SettingsPage: enum of navigation pages
+//   - GlassToggle: iOS-style toggle switch
+//   - VerticallyCenteredTextFieldCell: text field cell with vertical centering
+//   - buildSettingsView(): sidebar + content layout
+//   - Per-page builders: General, Claude, Codex, MCP, Starters, API Keys, License
+//   - Settings action handlers
+//   - StarterEditorPanel: floating editor for starter files
+//   - CodexConfig: reads/writes ~/.codex/config.toml
+//   - DemoRunner: orchestrates the Crystl demo sequence
 
 import Cocoa
+
+// ── Settings Page ──
+
+/// Pages available in the settings sidebar.
+enum SettingsPage: String, CaseIterable {
+    case general = "General"
+    case claude = "Claude"
+    case codex = "Codex"
+    case mcpServers = "MCP Servers"
+    case starters = "Starter Files"
+    case apiKeys = "API Keys"
+    case license = "License"
+}
 
 // ── Glass Toggle ──
 
@@ -69,7 +90,7 @@ class GlassToggle: NSView {
         let offX = knobPad
         let targetX = isOn ? onX : offX
         let trackColor = isOn
-            ? NSColor(red: 0.3, green: 0.7, blue: 0.45, alpha: 0.6).cgColor
+            ? NSColor(red: 0.55, green: 0.72, blue: 0.85, alpha: 0.6).cgColor
             : NSColor(white: 1.0, alpha: 0.12).cgColor
 
         if animated {
@@ -99,6 +120,45 @@ class GlassToggle: NSView {
         isOn ? .on : .off
     }
 }
+
+// ── Vertically Centered Text Field Cell ──
+
+class VerticallyCenteredTextFieldCell: NSTextFieldCell {
+    private let hPad: CGFloat = 8
+
+    override func titleRect(forBounds rect: NSRect) -> NSRect {
+        let inset = rect.insetBy(dx: hPad, dy: 0)
+        var r = super.titleRect(forBounds: inset)
+        let stringHeight = attributedStringValue.boundingRect(
+            with: NSSize(width: r.width, height: .greatestFiniteMagnitude),
+            options: .usesLineFragmentOrigin
+        ).height
+        let offset = (r.height - stringHeight) / 2
+        r.origin.y += offset
+        r.size.height = stringHeight
+        return r
+    }
+
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        super.drawInterior(withFrame: titleRect(forBounds: cellFrame), in: controlView)
+    }
+
+    override func edit(withFrame rect: NSRect, in controlView: NSView,
+                       editor textObj: NSText, delegate: Any?, event: NSEvent?) {
+        super.edit(withFrame: rect.insetBy(dx: hPad, dy: 0), in: controlView,
+                   editor: textObj, delegate: delegate, event: event)
+    }
+
+    override func select(withFrame rect: NSRect, in controlView: NSView,
+                         editor textObj: NSText, delegate: Any?,
+                         start selStart: Int, length selLength: Int) {
+        super.select(withFrame: rect.insetBy(dx: hPad, dy: 0), in: controlView,
+                     editor: textObj, delegate: delegate,
+                     start: selStart, length: selLength)
+    }
+}
+
+// ── Settings Builder ──
 
 extension TerminalWindowController {
 
@@ -167,6 +227,8 @@ extension TerminalWindowController {
 
     @objc func flipBackClicked() { flipToTerminal() }
 
+    // MARK: - Main Settings View
+
     func buildSettingsView() -> NSView {
         guard let container = window.contentView else { return NSView() }
         let bounds = container.bounds
@@ -185,576 +247,82 @@ extension TerminalWindowController {
         glass.appearance = NSAppearance(named: .darkAqua)
         view.addSubview(glass)
 
-        let labelColor = NSColor(white: 1.0, alpha: 0.7)
-        let fieldBg = NSColor(white: 1.0, alpha: 0.12)
-        let colWidth: CGFloat = 300
-        let gap: CGFloat = 60
-        let totalWidth = colWidth * 2 + gap
-
-        // Spacing constants
-        let sectionToHeader: CGFloat = 16
-        let labelToControl: CGFloat = 16
-        let controlToLabel: CGFloat = 10
-        let sectionBreak: CGFloat = 20
-        let labelH: CGFloat = 14
-        let controlH: CGFloat = 28
+        // ── Layout constants ──
+        let sidebarW: CGFloat = 200
+        let sidebarTopPad: CGFloat = 52   // sidebar clears traffic lights
+        let contentTopPad: CGFloat = 100  // content area below title
 
         // ── Title ──
         let title = NSTextField(labelWithString: "Settings")
         title.font = NSFont.systemFont(ofSize: 22, weight: .semibold)
         title.textColor = .white
-        title.alignment = .center
-        title.frame = NSRect(x: 0, y: bounds.height - 80, width: bounds.width, height: 28)
+        title.frame = NSRect(x: sidebarW + 32, y: bounds.height - contentTopPad + 10, width: bounds.width - sidebarW - 32, height: 28)
         title.autoresizingMask = [.width, .minYMargin]
         view.addSubview(title)
 
-        // ── Scrollable content area ──
-        let scrollFrame = NSRect(x: 0, y: 0, width: bounds.width, height: bounds.height - 100)
-        let settingsScroll = NSScrollView(frame: scrollFrame)
-        settingsScroll.hasVerticalScroller = true
-        settingsScroll.hasHorizontalScroller = false
-        settingsScroll.autohidesScrollers = true
-        settingsScroll.borderType = .noBorder
-        settingsScroll.drawsBackground = false
-        settingsScroll.autoresizingMask = [.width, .height]
-        settingsScroll.scrollerStyle = .overlay
+        // ── Sidebar ──
+        let sidebarFrame = NSRect(x: 0, y: 0, width: sidebarW, height: bounds.height - sidebarTopPad)
+        let sidebar = NSView(frame: sidebarFrame)
+        sidebar.autoresizingMask = [.height]
 
-        let docHeight: CGFloat = 1500
-        let docView = NSView(frame: NSRect(x: 0, y: 0, width: bounds.width, height: docHeight))
+        var navY = sidebarFrame.height - 12
+        let itemH: CGFloat = 30
 
-        let leftX = (bounds.width - totalWidth) / 2
-        let rightX = leftX + colWidth + gap
+        for page in SettingsPage.allCases {
+            navY -= itemH
+            let isSelected = page == settingsSelectedPage
 
-        let claudeEnabled = UserDefaults.standard.object(forKey: "agentEnabled:claude") as? Bool ?? true
-        let codexEnabled = UserDefaults.standard.object(forKey: "agentEnabled:codex") as? Bool ?? false
-        // ════════════════════════════════════════
-        // LEFT COLUMN — Agent Settings
-        // ════════════════════════════════════════
-        var yL = docHeight - 20
-
-        let leftHeader = NSTextField(labelWithString: "AGENT SETTINGS")
-        leftHeader.font = NSFont.systemFont(ofSize: 16, weight: .bold)
-        leftHeader.textColor = .white
-        leftHeader.frame = NSRect(x: leftX, y: yL, width: colWidth, height: 20)
-        docView.addSubview(leftHeader)
-        yL -= (20 + sectionToHeader)
-
-        // ── Claude ──
-        let claudeToggle = GlassToggle(title: "Claude", isOn: claudeEnabled,
-                                        frame: NSRect(x: leftX, y: yL, width: colWidth, height: 22))
-        claudeToggle.identifier = NSUserInterfaceItemIdentifier("agentEnable:claude")
-        claudeToggle.target = self
-        claudeToggle.action = #selector(agentEnableToggled(_:))
-        docView.addSubview(claudeToggle)
-        yL -= (22 + sectionToHeader)
-
-        // Claude settings — container for easy show/hide
-        let claudeSettingsY = yL
-        var claudeControls: [NSView] = []
-
-        let effortLabel = NSTextField(labelWithString: "EFFORT LEVEL")
-        effortLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
-        effortLabel.textColor = labelColor
-        effortLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
-        docView.addSubview(effortLabel); claudeControls.append(effortLabel)
-        yL -= (labelH + labelToControl)
-
-        let effortPop = NSPopUpButton(frame: NSRect(x: leftX, y: yL, width: colWidth, height: 28))
-        effortPop.addItems(withTitles: ["low", "medium", "high"])
-        effortPop.selectItem(withTitle: "high")
-        effortPop.font = NSFont.systemFont(ofSize: 12)
-        effortPop.appearance = NSAppearance(named: .darkAqua)
-        effortPop.target = self
-        effortPop.action = #selector(effortChanged(_:))
-        docView.addSubview(effortPop); claudeControls.append(effortPop)
-        yL -= (controlH + controlToLabel)
-
-        let modeLabel = NSTextField(labelWithString: "DEFAULT MODE")
-        modeLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
-        modeLabel.textColor = labelColor
-        modeLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
-        docView.addSubview(modeLabel); claudeControls.append(modeLabel)
-        yL -= (labelH + labelToControl)
-
-        let modePop = NSPopUpButton(frame: NSRect(x: leftX, y: yL, width: colWidth, height: 28))
-        modePop.addItems(withTitles: ["plan", "default", "acceptEdits", "bypassPermissions"])
-        modePop.font = NSFont.systemFont(ofSize: 12)
-        modePop.appearance = NSAppearance(named: .darkAqua)
-        modePop.target = self
-        modePop.action = #selector(defaultModeChanged(_:))
-        docView.addSubview(modePop); claudeControls.append(modePop)
-        yL -= (controlH + controlToLabel)
-
-        let portLabel = NSTextField(labelWithString: "BRIDGE PORT")
-        portLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
-        portLabel.textColor = labelColor
-        portLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
-        docView.addSubview(portLabel); claudeControls.append(portLabel)
-        yL -= (labelH + labelToControl)
-
-        let portField = NSTextField(string: "19280")
-        portField.cell = VerticallyCenteredTextFieldCell(textCell: "19280")
-        portField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        portField.textColor = NSColor(white: 1.0, alpha: 0.5)
-        portField.backgroundColor = fieldBg
-        portField.isBordered = false
-        portField.isBezeled = false
-        portField.drawsBackground = true
-        portField.isEditable = false
-        portField.wantsLayer = true
-        portField.layer?.cornerRadius = 8
-        portField.layer?.masksToBounds = true
-        portField.frame = NSRect(x: leftX, y: yL, width: colWidth, height: 28)
-        docView.addSubview(portField); claudeControls.append(portField)
-        yL -= (controlH + controlToLabel)
-
-        let openBtn = NSButton(frame: NSRect(x: leftX, y: yL, width: colWidth, height: 28))
-        openBtn.title = "Open settings.json"
-        openBtn.bezelStyle = .rounded
-        openBtn.isBordered = false
-        openBtn.wantsLayer = true
-        openBtn.layer?.backgroundColor = fieldBg.cgColor
-        openBtn.layer?.cornerRadius = 8
-        openBtn.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        openBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.6)
-        openBtn.target = self
-        openBtn.action = #selector(openSettingsFile)
-        docView.addSubview(openBtn); claudeControls.append(openBtn)
-        yL -= (controlH + sectionBreak)
-
-        // Notifications (Claude bridge-specific)
-        let notifLabel = NSTextField(labelWithString: "NOTIFICATIONS")
-        notifLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
-        notifLabel.textColor = labelColor
-        notifLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
-        docView.addSubview(notifLabel); claudeControls.append(notifLabel)
-        yL -= (labelH + labelToControl)
-
-        let appDelegate = NSApp.delegate as? AppDelegate
-        let enabled = appDelegate?.currentEnabledNotifications
-
-        let notifTypes: [(key: String, label: String, defaultOn: Bool)] = [
-            ("Stop",          "Task completed (Stop)",    true),
-            ("PostToolUse",   "Tool finished",            false),
-            ("SubagentStop",  "Agent finished",           false),
-            ("TaskCompleted", "Task completed (team)",    false),
-            ("Notification",  "Notifications",            true),
-            ("TeammateIdle",  "Teammate idle",            false),
-            ("SessionEnd",    "Session ended",            false),
-        ]
-
-        for item in notifTypes {
-            let currentState: Bool
-            switch item.key {
-            case "Stop":          currentState = enabled?.Stop ?? item.defaultOn
-            case "PostToolUse":   currentState = enabled?.PostToolUse ?? item.defaultOn
-            case "SubagentStop":  currentState = enabled?.SubagentStop ?? item.defaultOn
-            case "TaskCompleted": currentState = enabled?.TaskCompleted ?? item.defaultOn
-            case "Notification":  currentState = enabled?.Notification ?? item.defaultOn
-            case "TeammateIdle":  currentState = enabled?.TeammateIdle ?? item.defaultOn
-            case "SessionEnd":    currentState = enabled?.SessionEnd ?? item.defaultOn
-            default:              currentState = item.defaultOn
+            if isSelected {
+                let bg = NSView(frame: NSRect(x: 12, y: navY, width: sidebarW - 24, height: itemH))
+                bg.wantsLayer = true
+                bg.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.1).cgColor
+                bg.layer?.cornerRadius = 6
+                sidebar.addSubview(bg)
             }
 
-            let toggle = NSButton(checkboxWithTitle: item.label, target: self,
-                                   action: #selector(notifToggled(_:)))
-            toggle.state = currentState ? .on : .off
-            toggle.identifier = NSUserInterfaceItemIdentifier("notif:" + item.key)
-            toggle.attributedTitle = NSAttributedString(string: item.label, attributes: [
-                .foregroundColor: NSColor.white,
-                .font: NSFont.systemFont(ofSize: 11)
-            ])
-            toggle.frame = NSRect(x: leftX, y: yL, width: colWidth, height: 18)
-            docView.addSubview(toggle); claudeControls.append(toggle)
-            yL -= 22
-        }
-        yL -= controlToLabel
+            let item = NSButton(frame: NSRect(x: 20, y: navY, width: sidebarW - 32, height: itemH))
+            item.title = page.rawValue
+            item.bezelStyle = .inline
+            item.isBordered = false
+            item.font = NSFont.systemFont(ofSize: 12, weight: isSelected ? .semibold : .regular)
+            item.contentTintColor = isSelected ? .white : NSColor(white: 1.0, alpha: 0.6)
+            item.alignment = .left
 
-        if !claudeEnabled {
-            for c in claudeControls { c.isHidden = true }
-            yL = claudeSettingsY - 4  // collapse space
+            item.identifier = NSUserInterfaceItemIdentifier("settingsNav:\(page.rawValue)")
+            item.target = self
+            item.action = #selector(settingsNavClicked(_:))
+            sidebar.addSubview(item)
         }
 
-        // ── Codex ──
-        let codexToggle = GlassToggle(title: "Codex", isOn: codexEnabled,
-                                       frame: NSRect(x: leftX, y: yL, width: colWidth, height: 22))
-        codexToggle.identifier = NSUserInterfaceItemIdentifier("agentEnable:codex")
-        codexToggle.target = self
-        codexToggle.action = #selector(agentEnableToggled(_:))
-        docView.addSubview(codexToggle)
-        yL -= (22 + sectionToHeader)
+        view.addSubview(sidebar)
 
-        let codexSettingsY = yL
-        var codexControls: [NSView] = []
+        // ── Separator line ──
+        let sep = NSView(frame: NSRect(x: sidebarW, y: 0, width: 1, height: bounds.height - sidebarTopPad))
+        sep.wantsLayer = true
+        sep.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.12).cgColor
+        sep.autoresizingMask = [.height]
+        view.addSubview(sep)
 
-        let approvalLabel = NSTextField(labelWithString: "APPROVAL POLICY")
-        approvalLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
-        approvalLabel.textColor = labelColor
-        approvalLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
-        docView.addSubview(approvalLabel); codexControls.append(approvalLabel)
-        yL -= (labelH + labelToControl)
+        // ── Content area (scrollable) ──
+        let contentFrame = NSRect(x: sidebarW + 1, y: 0, width: bounds.width - sidebarW - 1, height: bounds.height - contentTopPad)
+        let contentScroll = NSScrollView(frame: contentFrame)
+        contentScroll.hasVerticalScroller = true
+        contentScroll.hasHorizontalScroller = false
+        contentScroll.autohidesScrollers = true
+        contentScroll.borderType = .noBorder
+        contentScroll.drawsBackground = false
+        contentScroll.autoresizingMask = [.width, .height]
+        contentScroll.scrollerStyle = .overlay
 
-        let currentApproval = CodexConfig.readApprovalPolicy()
-        let approvalPop = NSPopUpButton(frame: NSRect(x: leftX, y: yL, width: colWidth, height: 28))
-        approvalPop.addItems(withTitles: ["untrusted", "on-request", "never"])
-        approvalPop.selectItem(withTitle: currentApproval)
-        approvalPop.font = NSFont.systemFont(ofSize: 12)
-        approvalPop.appearance = NSAppearance(named: .darkAqua)
-        approvalPop.target = self
-        approvalPop.action = #selector(codexApprovalChanged(_:))
-        docView.addSubview(approvalPop); codexControls.append(approvalPop)
-        yL -= (controlH + controlToLabel)
+        let pageContent = buildPage(settingsSelectedPage, width: contentFrame.width, minHeight: contentFrame.height)
+        contentScroll.documentView = pageContent
+        view.addSubview(contentScroll)
 
-        let sandboxLabel = NSTextField(labelWithString: "SANDBOX MODE")
-        sandboxLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
-        sandboxLabel.textColor = labelColor
-        sandboxLabel.frame = NSRect(x: leftX, y: yL, width: colWidth, height: labelH)
-        docView.addSubview(sandboxLabel); codexControls.append(sandboxLabel)
-        yL -= (labelH + labelToControl)
-
-        let currentSandbox = CodexConfig.readSandboxMode()
-        let sandboxPop = NSPopUpButton(frame: NSRect(x: leftX, y: yL, width: colWidth, height: 28))
-        sandboxPop.addItems(withTitles: ["workspace-read", "workspace-write", "danger-full-access"])
-        sandboxPop.selectItem(withTitle: currentSandbox)
-        sandboxPop.font = NSFont.systemFont(ofSize: 12)
-        sandboxPop.appearance = NSAppearance(named: .darkAqua)
-        sandboxPop.target = self
-        sandboxPop.action = #selector(codexSandboxChanged(_:))
-        docView.addSubview(sandboxPop); codexControls.append(sandboxPop)
-        yL -= (controlH + controlToLabel)
-
-        let codexDesc = NSTextField(labelWithString: "Applied on next Codex launch")
-        codexDesc.font = NSFont.systemFont(ofSize: 10, weight: .regular)
-        codexDesc.textColor = NSColor(white: 1.0, alpha: 0.5)
-        codexDesc.frame = NSRect(x: leftX, y: yL, width: colWidth, height: 14)
-        docView.addSubview(codexDesc); codexControls.append(codexDesc)
-        yL -= (14 + controlToLabel)
-
-        if !codexEnabled {
-            for c in codexControls { c.isHidden = true }
-            yL = codexSettingsY - 4
+        // Scroll to top (non-flipped: top = max y)
+        if let docView = contentScroll.documentView {
+            let topY = max(0, docView.frame.height - contentScroll.contentView.bounds.height)
+            contentScroll.contentView.scroll(to: NSPoint(x: 0, y: topY))
         }
-
-        // ════════════════════════════════════════
-        // RIGHT COLUMN — General
-        // ════════════════════════════════════════
-        var yR = docHeight - 20
-
-        let rightHeader = NSTextField(labelWithString: "GENERAL")
-        rightHeader.font = NSFont.systemFont(ofSize: 16, weight: .bold)
-        rightHeader.textColor = .white
-        rightHeader.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 20)
-        docView.addSubview(rightHeader)
-        yR -= (20 + sectionToHeader)
-
-        // ── Projects Directory ──
-        let projLabel = NSTextField(labelWithString: "DEFAULT GEMS DIRECTORY")
-        projLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
-        projLabel.textColor = labelColor
-        projLabel.frame = NSRect(x: rightX, y: yR, width: colWidth, height: labelH)
-        docView.addSubview(projLabel)
-        yR -= (labelH + labelToControl)
-
-        let projDir = UserDefaults.standard.string(forKey: "projectsDirectory") ?? ""
-        let projDisplay = projDir.isEmpty ? "~/Projects" : (projDir as NSString).abbreviatingWithTildeInPath
-        let projField = NSTextField(string: projDisplay)
-        projField.cell = VerticallyCenteredTextFieldCell(textCell: projDisplay)
-        projField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        projField.textColor = .white
-        projField.backgroundColor = fieldBg
-        projField.isBordered = false
-        projField.isBezeled = false
-        projField.drawsBackground = true
-        projField.isEditable = false
-        projField.wantsLayer = true
-        projField.layer?.cornerRadius = 8
-        projField.layer?.masksToBounds = true
-        projField.frame = NSRect(x: rightX, y: yR, width: colWidth - 70, height: 28)
-        projField.identifier = NSUserInterfaceItemIdentifier("projectsDirField")
-        docView.addSubview(projField)
-
-        let browseBtn = NSButton(frame: NSRect(x: rightX + colWidth - 64, y: yR, width: 64, height: 28))
-        browseBtn.title = "Browse"
-        browseBtn.bezelStyle = .rounded
-        browseBtn.isBordered = false
-        browseBtn.wantsLayer = true
-        browseBtn.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.1).cgColor
-        browseBtn.layer?.cornerRadius = 8
-        browseBtn.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        browseBtn.contentTintColor = .white
-        browseBtn.target = self
-        browseBtn.action = #selector(browseProjectsDir(_:))
-        docView.addSubview(browseBtn)
-        yR -= (controlH + controlToLabel)
-
-        // ── Git Remote Base URL ──
-        let gitLabel = NSTextField(labelWithString: "GIT REMOTE BASE URL")
-        gitLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
-        gitLabel.textColor = labelColor
-        gitLabel.frame = NSRect(x: rightX, y: yR, width: colWidth, height: labelH)
-        docView.addSubview(gitLabel)
-        yR -= (labelH + labelToControl)
-
-        let gitBaseUrl = UserDefaults.standard.string(forKey: "gitRemoteBaseUrl") ?? ""
-        let gitField = NSTextField(string: gitBaseUrl)
-        gitField.cell = VerticallyCenteredTextFieldCell(textCell: gitBaseUrl)
-        gitField.placeholderString = "git@github.com:user/"
-        gitField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-        gitField.textColor = .white
-        gitField.backgroundColor = fieldBg
-        gitField.isBordered = false
-        gitField.isBezeled = false
-        gitField.drawsBackground = true
-        gitField.wantsLayer = true
-        gitField.layer?.cornerRadius = 8
-        gitField.layer?.masksToBounds = true
-        gitField.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 28)
-        gitField.identifier = NSUserInterfaceItemIdentifier("gitRemoteBaseUrl")
-        gitField.target = self
-        gitField.action = #selector(gitBaseUrlChanged(_:))
-        docView.addSubview(gitField)
-        yR -= (controlH + sectionBreak)
-
-        // ── API Keys ──
-        let apiTitle = NSTextField(labelWithString: "API KEYS")
-        apiTitle.font = NSFont.systemFont(ofSize: 10, weight: .bold)
-        apiTitle.textColor = labelColor
-        apiTitle.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 14)
-        docView.addSubview(apiTitle)
-        yR -= (14 + 6)
-
-        let apiDesc = NSTextField(labelWithString: "Injected into shell sessions as env vars")
-        apiDesc.font = NSFont.systemFont(ofSize: 10, weight: .regular)
-        apiDesc.textColor = NSColor(white: 1.0, alpha: 0.5)
-        apiDesc.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 14)
-        docView.addSubview(apiDesc)
-        yR -= (14 + 10)
-
-        let store = APIKeyStore.shared
-        for slot in apiKeySlots {
-            let slotLabel = NSTextField(labelWithString: slot.name.uppercased())
-            slotLabel.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
-            slotLabel.textColor = labelColor
-            slotLabel.frame = NSRect(x: rightX, y: yR, width: colWidth, height: labelH)
-            docView.addSubview(slotLabel)
-            yR -= (labelH + labelToControl)
-
-            let existing = store.get(slot.envVar) ?? ""
-            let masked = existing.isEmpty ? "" : maskKey(existing)
-            let keyField = NSSecureTextField(string: "")
-            keyField.cell = VerticallyCenteredTextFieldCell(textCell: "")
-            (keyField.cell as? NSSecureTextFieldCell)?.echosBullets = true
-            keyField.placeholderString = existing.isEmpty ? slot.placeholder : masked
-            keyField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-            keyField.textColor = .white
-            keyField.backgroundColor = fieldBg
-            keyField.isBordered = false
-            keyField.isBezeled = false
-            keyField.drawsBackground = true
-            keyField.wantsLayer = true
-            keyField.layer?.cornerRadius = 8
-            keyField.layer?.masksToBounds = true
-            keyField.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 28)
-            keyField.identifier = NSUserInterfaceItemIdentifier("apiKey:\(slot.envVar)")
-            keyField.target = self
-            keyField.action = #selector(apiKeyChanged(_:))
-            docView.addSubview(keyField)
-            yR -= (controlH + controlToLabel)
-        }
-        yR -= (sectionBreak - controlToLabel)
-
-        // ── MCP Servers ──
-        let mcpTitle = NSTextField(labelWithString: "DEFAULT MCP SERVERS")
-        mcpTitle.font = NSFont.systemFont(ofSize: 10, weight: .bold)
-        mcpTitle.textColor = labelColor
-        mcpTitle.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 14)
-        docView.addSubview(mcpTitle)
-        yR -= (14 + 6)
-
-        let mcpDesc = NSTextField(labelWithString: "Synced to Claude (.mcp.json) and Codex (config.toml)")
-        mcpDesc.font = NSFont.systemFont(ofSize: 10, weight: .regular)
-        mcpDesc.textColor = NSColor(white: 1.0, alpha: 0.5)
-        mcpDesc.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 14)
-        docView.addSubview(mcpDesc)
-        yR -= (14 + controlToLabel)
-
-        let mcpManager = MCPConfigManager.shared
-        let sortedServers = mcpManager.catalog.servers.sorted(by: { $0.key < $1.key })
-
-        // Server list — each row is 26px, laid out top-to-bottom
-        if sortedServers.isEmpty {
-            yR -= 4
-            let emptyLabel = NSTextField(labelWithString: "No MCP servers configured")
-            emptyLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-            emptyLabel.textColor = NSColor(white: 1.0, alpha: 0.35)
-            emptyLabel.alignment = .center
-            emptyLabel.frame = NSRect(x: rightX + 4, y: yR - 16, width: colWidth - 8, height: 16)
-            docView.addSubview(emptyLabel)
-            yR -= 24
-        } else {
-            for (i, (name, server)) in sortedServers.enumerated() {
-                yR -= 26
-                let rowY = yR
-
-                let toggle = NSButton(checkboxWithTitle: "", target: self,
-                                      action: #selector(mcpGlobalToggled(_:)))
-                toggle.state = server.enabledByDefault ? .on : .off
-                toggle.identifier = NSUserInterfaceItemIdentifier("mcpGlobal:" + name)
-                toggle.frame = NSRect(x: rightX + 4, y: rowY, width: 20, height: 18)
-                docView.addSubview(toggle)
-
-                let nameLabel = NSTextField(labelWithString: name)
-                nameLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-                nameLabel.textColor = .white
-                nameLabel.frame = NSRect(x: rightX + 30, y: rowY, width: colWidth - 56, height: 16)
-                nameLabel.lineBreakMode = .byTruncatingTail
-                docView.addSubview(nameLabel)
-
-                let removeBtn = NSButton(frame: NSRect(
-                    x: rightX + colWidth - 18, y: rowY + 1, width: 16, height: 16))
-                removeBtn.title = "×"
-                removeBtn.bezelStyle = .inline
-                removeBtn.isBordered = false
-                removeBtn.font = NSFont.systemFont(ofSize: 14, weight: .light)
-                removeBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.3)
-                removeBtn.identifier = NSUserInterfaceItemIdentifier("mcpRemove:" + name)
-                removeBtn.target = self
-                removeBtn.action = #selector(removeMCPServer(_:))
-                docView.addSubview(removeBtn)
-            }
-        }
-        yR -= (controlH + 14)
-
-        let addBtn = NSButton(frame: NSRect(x: rightX, y: yR, width: colWidth, height: controlH))
-        addBtn.title = "+ Add MCP Server"
-        addBtn.bezelStyle = .rounded
-        addBtn.isBordered = false
-        addBtn.wantsLayer = true
-        addBtn.layer?.backgroundColor = fieldBg.cgColor
-        addBtn.layer?.cornerRadius = 8
-        addBtn.font = NSFont.systemFont(ofSize: 10, weight: .medium)
-        addBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.6)
-        addBtn.target = self
-        addBtn.action = #selector(addMCPServer)
-        docView.addSubview(addBtn)
-        yR -= (controlH + sectionBreak)
-
-        // ── Starter Files ──
-        let starterTitle = NSTextField(labelWithString: "DEFAULT STARTER FILES")
-        starterTitle.font = NSFont.systemFont(ofSize: 10, weight: .bold)
-        starterTitle.textColor = labelColor
-        starterTitle.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 14)
-        docView.addSubview(starterTitle)
-        yR -= (14 + 6)
-
-        let starterDesc = NSTextField(labelWithString: "Templates written to new gems")
-        starterDesc.font = NSFont.systemFont(ofSize: 10, weight: .regular)
-        starterDesc.textColor = NSColor(white: 1.0, alpha: 0.5)
-        starterDesc.frame = NSRect(x: rightX, y: yR, width: colWidth, height: 14)
-        docView.addSubview(starterDesc)
-        yR -= (14 + controlToLabel)
-
-        let starterMgr = StarterManager.shared
-
-        if starterMgr.starters.isEmpty {
-            yR -= 4
-            let emptyLabel = NSTextField(labelWithString: "No starter files configured")
-            emptyLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-            emptyLabel.textColor = NSColor(white: 1.0, alpha: 0.35)
-            emptyLabel.alignment = .center
-            emptyLabel.frame = NSRect(x: rightX + 4, y: yR - 16, width: colWidth - 8, height: 16)
-            docView.addSubview(emptyLabel)
-            yR -= 24
-        } else {
-            for starter in starterMgr.starters {
-                yR -= 26
-                let rowY = yR
-
-                let toggle = NSButton(checkboxWithTitle: "", target: self,
-                                      action: #selector(starterEnabledToggled(_:)))
-                toggle.state = starter.enabledByDefault ? .on : .off
-                toggle.identifier = NSUserInterfaceItemIdentifier("starterEnabled:\(starter.id.uuidString)")
-                toggle.frame = NSRect(x: rightX + 4, y: rowY, width: 20, height: 18)
-                docView.addSubview(toggle)
-
-                let nameLabel = NSTextField(labelWithString: starter.filename)
-                nameLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-                nameLabel.textColor = .white
-                nameLabel.lineBreakMode = .byTruncatingTail
-                nameLabel.frame = NSRect(x: rightX + 30, y: rowY, width: colWidth - 82, height: 16)
-                docView.addSubview(nameLabel)
-
-                let editBtn = NSButton(frame: NSRect(
-                    x: rightX + colWidth - 44, y: rowY, width: 22, height: 16))
-                editBtn.title = "✎"
-                editBtn.bezelStyle = .inline
-                editBtn.isBordered = false
-                editBtn.font = NSFont.systemFont(ofSize: 12, weight: .regular)
-                editBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.5)
-                editBtn.identifier = NSUserInterfaceItemIdentifier("starterEdit:\(starter.id.uuidString)")
-                editBtn.target = self
-                editBtn.action = #selector(editStarter(_:))
-                docView.addSubview(editBtn)
-
-                let removeBtn = NSButton(frame: NSRect(
-                    x: rightX + colWidth - 18, y: rowY + 1, width: 16, height: 16))
-                removeBtn.title = "×"
-                removeBtn.bezelStyle = .inline
-                removeBtn.isBordered = false
-                removeBtn.font = NSFont.systemFont(ofSize: 14, weight: .light)
-                removeBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.3)
-                removeBtn.identifier = NSUserInterfaceItemIdentifier("starterDelete:\(starter.id.uuidString)")
-                removeBtn.target = self
-                removeBtn.action = #selector(deleteStarter(_:))
-                docView.addSubview(removeBtn)
-            }
-        }
-        yR -= (controlH + 14)
-
-        let addStarterBtn = NSButton(frame: NSRect(x: rightX, y: yR, width: colWidth, height: controlH))
-        addStarterBtn.title = "+ Add Starter File"
-        addStarterBtn.bezelStyle = .rounded
-        addStarterBtn.isBordered = false
-        addStarterBtn.wantsLayer = true
-        addStarterBtn.layer?.backgroundColor = fieldBg.cgColor
-        addStarterBtn.layer?.cornerRadius = 8
-        addStarterBtn.font = NSFont.systemFont(ofSize: 10, weight: .medium)
-        addStarterBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.6)
-        addStarterBtn.target = self
-        addStarterBtn.action = #selector(addStarter)
-        docView.addSubview(addStarterBtn)
-        yR -= (controlH + sectionBreak)
-
-        // ── Demo ──
-        let demoBtn = NSButton(frame: NSRect(x: rightX, y: yR, width: colWidth, height: controlH))
-        demoBtn.title = "▶  Run Demo"
-        demoBtn.bezelStyle = .rounded
-        demoBtn.isBordered = false
-        demoBtn.wantsLayer = true
-        demoBtn.layer?.backgroundColor = fieldBg.cgColor
-        demoBtn.layer?.cornerRadius = 8
-        demoBtn.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        demoBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.6)
-        demoBtn.target = self
-        demoBtn.action = #selector(runDemo)
-        docView.addSubview(demoBtn)
-        yR -= (controlH + sectionBreak)
-
-        // ── Finalize scroll view ──
-        let lowestY = min(yL, yR)
-        let actualDocH = docHeight - lowestY + 20
-        docView.frame = NSRect(x: 0, y: 0, width: bounds.width, height: actualDocH)
-
-        let shift = lowestY - 20
-        for sub in docView.subviews {
-            sub.frame.origin.y -= shift
-        }
-
-        settingsScroll.documentView = docView
-        view.addSubview(settingsScroll)
-
-        // Scroll to top
-        settingsScroll.contentView.scroll(to: NSPoint(x: 0, y: actualDocH - settingsScroll.frame.height))
 
         // ── Crystal icon — top right, flips back ──
         let iconSize: CGFloat = 28
@@ -783,6 +351,725 @@ extension TerminalWindowController {
         return view
     }
 
+    // MARK: - Page Router
+
+    private func buildPage(_ page: SettingsPage, width: CGFloat, minHeight: CGFloat = 0) -> NSView {
+        switch page {
+        case .general:    return buildGeneralPage(width: width, minH: minHeight)
+        case .claude:     return buildClaudePage(width: width, minH: minHeight)
+        case .codex:      return buildCodexPage(width: width, minH: minHeight)
+        case .mcpServers: return buildMCPPage(width: width, minH: minHeight)
+        case .starters:   return buildStartersPage(width: width, minH: minHeight)
+        case .apiKeys:    return buildAPIKeysPage(width: width, minH: minHeight)
+        case .license:    return buildLicensePage(width: width, minH: minHeight)
+        }
+    }
+
+    // MARK: - Shared Layout Helpers
+
+    private var settingsColWidth: CGFloat { 360 }
+    private var settingsLabelColor: NSColor { NSColor(white: 1.0, alpha: 0.7) }
+    private var settingsFieldBg: NSColor { NSColor(white: 1.0, alpha: 0.12) }
+
+    /// Creates a doc view with a generous initial height. Call `finalizeDocView` when done.
+    private func makeDocView(width: CGFloat) -> (NSView, CGFloat, CGFloat) {
+        let docH: CGFloat = 2000  // generous; trimmed by finalizeDocView
+        let docView = NSView(frame: NSRect(x: 0, y: 0, width: width, height: docH))
+        let leftX: CGFloat = 32
+        let startY = docH - 24
+        return (docView, leftX, startY)
+    }
+
+    /// Trims the doc view to fit content, pinning it to the top (high y in non-flipped coords).
+    /// Ensures doc is at least `minHeight` tall so scroll-to-top works.
+    private func finalizeDocView(_ docView: NSView, startY: CGFloat, currentY: CGFloat, width: CGFloat, minHeight: CGFloat = 0) {
+        let contentUsed = startY - currentY
+        let actualH = max(contentUsed + 48, minHeight)
+        docView.frame = NSRect(x: 0, y: 0, width: width, height: actualH)
+        // Content was laid out from startY downward. Shift so top content sits at top of docView.
+        let targetTopY = actualH - 24  // 24px top padding
+        let shift = startY - targetTopY
+        for sub in docView.subviews { sub.frame.origin.y -= shift }
+    }
+
+    private func addSectionHeader(_ text: String, to view: NSView, x: CGFloat, y: inout CGFloat, width: CGFloat) {
+        let header = NSTextField(labelWithString: text)
+        header.font = NSFont.systemFont(ofSize: 10, weight: .bold)
+        header.textColor = settingsLabelColor
+        header.frame = NSRect(x: x, y: y, width: width, height: 14)
+        view.addSubview(header)
+        y -= 24
+    }
+
+    /// Places a field label. The next control (28px) must not overlap.
+    /// Non-flipped: label frame.origin.y is its bottom edge.
+    /// After this, y points where a 28px control can be placed with its
+    /// top edge 4px below the label bottom.
+    private func addFieldLabel(_ text: String, to view: NSView, x: CGFloat, y: inout CGFloat, width: CGFloat) {
+        let label = NSTextField(labelWithString: text)
+        label.font = NSFont.systemFont(ofSize: 9, weight: .semibold)
+        label.textColor = settingsLabelColor
+        label.frame = NSRect(x: x, y: y, width: width, height: 14)
+        view.addSubview(label)
+        // label bottom edge = y. Next 28px control top = new_y+28.
+        // Want new_y+28 = y-4 (4px gap), so new_y = y-32.
+        y -= 32
+    }
+
+    private func addTextField(_ value: String, placeholder: String? = nil, editable: Bool = true,
+                               to view: NSView, x: CGFloat, y: inout CGFloat, width: CGFloat,
+                               id: String? = nil, action: Selector? = nil) -> NSTextField {
+        let field = NSTextField(string: value)
+        field.cell = VerticallyCenteredTextFieldCell(textCell: value)
+        if let ph = placeholder {
+            field.placeholderAttributedString = NSAttributedString(string: ph, attributes: [
+                .foregroundColor: NSColor(white: 1.0, alpha: 0.35),
+                .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+            ])
+        }
+        field.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        field.textColor = editable ? .white : NSColor(white: 1.0, alpha: 0.5)
+        field.isBordered = false
+        field.isBezeled = false
+        field.drawsBackground = false
+        field.isEditable = editable
+        field.wantsLayer = true
+        field.layer?.backgroundColor = settingsFieldBg.cgColor
+        field.layer?.cornerRadius = 8
+        field.layer?.masksToBounds = true
+        field.frame = NSRect(x: x, y: y, width: width, height: 28)
+        if let id = id { field.identifier = NSUserInterfaceItemIdentifier(id) }
+        if let action = action { field.target = self; field.action = action }
+        view.addSubview(field)
+        y -= 38  // 28 + 10
+        return field
+    }
+
+    private func addPopup(_ items: [String], selected: String? = nil,
+                           to view: NSView, x: CGFloat, y: inout CGFloat, width: CGFloat,
+                           action: Selector) -> NSPopUpButton {
+        let popup = NSPopUpButton(frame: NSRect(x: x, y: y, width: width, height: 28))
+        popup.addItems(withTitles: items)
+        if let sel = selected { popup.selectItem(withTitle: sel) }
+        popup.font = NSFont.systemFont(ofSize: 12)
+        popup.appearance = NSAppearance(named: .darkAqua)
+        popup.target = self
+        popup.action = action
+        view.addSubview(popup)
+        y -= 38
+        return popup
+    }
+
+    private func addButton(_ title: String, to view: NSView, x: CGFloat, y: inout CGFloat, width: CGFloat,
+                            tintColor: NSColor = NSColor(white: 1.0, alpha: 0.6),
+                            bgColor: NSColor? = nil,
+                            action: Selector) -> NSButton {
+        let btn = NSButton(frame: NSRect(x: x, y: y, width: width, height: 28))
+        btn.title = title
+        btn.bezelStyle = .rounded
+        btn.isBordered = false
+        btn.wantsLayer = true
+        btn.layer?.backgroundColor = (bgColor ?? settingsFieldBg).cgColor
+        btn.layer?.cornerRadius = 8
+        btn.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        btn.contentTintColor = tintColor
+        btn.target = self
+        btn.action = action
+        view.addSubview(btn)
+        y -= 38
+        return btn
+    }
+
+    private func addDescription(_ text: String, to view: NSView, x: CGFloat, y: inout CGFloat, width: CGFloat) {
+        let desc = NSTextField(labelWithString: text)
+        desc.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        desc.textColor = NSColor(white: 1.0, alpha: 0.5)
+        desc.frame = NSRect(x: x, y: y, width: width, height: 14)
+        view.addSubview(desc)
+        y -= 24
+    }
+
+    // MARK: - General Page
+
+    private func buildGeneralPage(width: CGFloat, minH: CGFloat = 0) -> NSView {
+        let (docView, x, startY) = makeDocView(width: width)
+        var y = startY
+        let w = settingsColWidth
+
+        addSectionHeader("GENERAL", to: docView, x: x, y: &y, width: w)
+
+        // Projects Directory
+        addFieldLabel("DEFAULT GEMS DIRECTORY", to: docView, x: x, y: &y, width: w)
+
+        let projDir = UserDefaults.standard.string(forKey: "projectsDirectory") ?? ""
+        let projDisplay = projDir.isEmpty ? "~/Projects" : (projDir as NSString).abbreviatingWithTildeInPath
+        let projField = NSTextField(string: projDisplay)
+        projField.cell = VerticallyCenteredTextFieldCell(textCell: projDisplay)
+        projField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        projField.textColor = .white
+        projField.isBordered = false
+        projField.isBezeled = false
+        projField.drawsBackground = false
+        projField.isEditable = false
+        projField.wantsLayer = true
+        projField.layer?.backgroundColor = settingsFieldBg.cgColor
+        projField.layer?.cornerRadius = 8
+        projField.layer?.masksToBounds = true
+        projField.frame = NSRect(x: x, y: y, width: w - 74, height: 28)
+        projField.identifier = NSUserInterfaceItemIdentifier("projectsDirField")
+        docView.addSubview(projField)
+
+        let browseBtn = NSButton(frame: NSRect(x: x + w - 68, y: y, width: 68, height: 28))
+        browseBtn.title = "Browse"
+        browseBtn.bezelStyle = .rounded
+        browseBtn.isBordered = false
+        browseBtn.wantsLayer = true
+        browseBtn.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.1).cgColor
+        browseBtn.layer?.cornerRadius = 8
+        browseBtn.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        browseBtn.contentTintColor = .white
+        browseBtn.target = self
+        browseBtn.action = #selector(browseProjectsDir(_:))
+        docView.addSubview(browseBtn)
+        y -= 38
+
+        // Git Remote Base URL
+        addFieldLabel("GIT REMOTE BASE URL", to: docView, x: x, y: &y, width: w)
+        let gitBaseUrl = UserDefaults.standard.string(forKey: "gitRemoteBaseUrl") ?? ""
+        _ = addTextField(gitBaseUrl, placeholder: "git@github.com:user/", to: docView,
+                         x: x, y: &y, width: w, id: "gitRemoteBaseUrl", action: #selector(gitBaseUrlChanged(_:)))
+
+        y -= 12
+
+        // ── Toggles ──
+        let railOn = UserDefaults.standard.object(forKey: "crystalRailEnabled") as? Bool ?? true
+        let railToggle = GlassToggle(title: "Crystal Rail", isOn: railOn,
+                                      frame: NSRect(x: x, y: y, width: w, height: 22))
+        railToggle.identifier = NSUserInterfaceItemIdentifier("toggle:crystalRail")
+        railToggle.target = self
+        railToggle.action = #selector(generalToggleChanged(_:))
+        docView.addSubview(railToggle)
+        y -= 32
+
+        let notifsOn = UserDefaults.standard.object(forKey: "notificationsEnabled") as? Bool ?? true
+        let notifToggle = GlassToggle(title: "Notifications", isOn: notifsOn,
+                                       frame: NSRect(x: x, y: y, width: w, height: 22))
+        notifToggle.identifier = NSUserInterfaceItemIdentifier("toggle:notifications")
+        notifToggle.target = self
+        notifToggle.action = #selector(generalToggleChanged(_:))
+        docView.addSubview(notifToggle)
+        y -= 38
+
+        // Demo button
+        _ = addButton("▶  Run Demo", to: docView, x: x, y: &y, width: w, action: #selector(runDemo))
+
+        finalizeDocView(docView, startY: startY, currentY: y, width: width, minHeight: minH)
+        return docView
+    }
+
+    // MARK: - Claude Page
+
+    private func buildClaudePage(width: CGFloat, minH: CGFloat = 0) -> NSView {
+        let (docView, x, startY) = makeDocView(width: width)
+        var y = startY
+        let w = settingsColWidth
+        let claudeEnabled = UserDefaults.standard.object(forKey: "agentEnabled:claude") as? Bool ?? true
+
+        // Toggle
+        let toggle = GlassToggle(title: "Claude", isOn: claudeEnabled,
+                                  frame: NSRect(x: x, y: y, width: w, height: 22))
+        toggle.identifier = NSUserInterfaceItemIdentifier("agentEnable:claude")
+        toggle.target = self
+        toggle.action = #selector(agentEnableToggled(_:))
+        docView.addSubview(toggle)
+        y -= 38
+
+        guard claudeEnabled else {
+            let hint = NSTextField(labelWithString: "Enable to configure Claude settings")
+            hint.font = NSFont.systemFont(ofSize: 11)
+            hint.textColor = NSColor(white: 1.0, alpha: 0.35)
+            hint.frame = NSRect(x: x, y: y, width: w, height: 14)
+            docView.addSubview(hint)
+            y -= 24
+            finalizeDocView(docView, startY: startY, currentY: y, width: width, minHeight: minH)
+            return docView
+        }
+
+        // Effort Level
+        addFieldLabel("EFFORT LEVEL", to: docView, x: x, y: &y, width: w)
+        _ = addPopup(["low", "medium", "high"], selected: "high", to: docView, x: x, y: &y, width: w,
+                     action: #selector(effortChanged(_:)))
+
+        // Default Mode
+        addFieldLabel("DEFAULT MODE", to: docView, x: x, y: &y, width: w)
+        _ = addPopup(["plan", "default", "acceptEdits", "bypassPermissions"], to: docView, x: x, y: &y, width: w,
+                     action: #selector(defaultModeChanged(_:)))
+
+        // Bridge Port
+        addFieldLabel("BRIDGE PORT", to: docView, x: x, y: &y, width: w)
+        _ = addTextField("19280", to: docView, x: x, y: &y, width: w, id: nil, action: nil)
+        // Make it read-only (last added)
+        if let lastField = docView.subviews.last as? NSTextField {
+            lastField.isEditable = false
+            lastField.textColor = NSColor(white: 1.0, alpha: 0.5)
+        }
+
+        // Open settings.json
+        _ = addButton("Open settings.json", to: docView, x: x, y: &y, width: w, action: #selector(openSettingsFile))
+
+        y -= 12
+
+        // Notifications
+        addSectionHeader("NOTIFICATIONS", to: docView, x: x, y: &y, width: w)
+
+        let appDelegate = NSApp.delegate as? AppDelegate
+        let enabled = appDelegate?.currentEnabledNotifications
+
+        let notifTypes: [(key: String, label: String, defaultOn: Bool)] = [
+            ("Stop",          "Task completed (Stop)",    true),
+            ("PostToolUse",   "Tool finished",            false),
+            ("SubagentStop",  "Agent finished",           false),
+            ("TaskCompleted", "Task completed (team)",    false),
+            ("Notification",  "Notifications",            true),
+            ("TeammateIdle",  "Teammate idle",            false),
+            ("SessionEnd",    "Session ended",            false),
+        ]
+
+        for item in notifTypes {
+            let currentState: Bool
+            switch item.key {
+            case "Stop":          currentState = enabled?.Stop ?? item.defaultOn
+            case "PostToolUse":   currentState = enabled?.PostToolUse ?? item.defaultOn
+            case "SubagentStop":  currentState = enabled?.SubagentStop ?? item.defaultOn
+            case "TaskCompleted": currentState = enabled?.TaskCompleted ?? item.defaultOn
+            case "Notification":  currentState = enabled?.Notification ?? item.defaultOn
+            case "TeammateIdle":  currentState = enabled?.TeammateIdle ?? item.defaultOn
+            case "SessionEnd":    currentState = enabled?.SessionEnd ?? item.defaultOn
+            default:              currentState = item.defaultOn
+            }
+
+            let cb = NSButton(checkboxWithTitle: item.label, target: self,
+                               action: #selector(notifToggled(_:)))
+            cb.state = currentState ? .on : .off
+            cb.identifier = NSUserInterfaceItemIdentifier("notif:" + item.key)
+            cb.attributedTitle = NSAttributedString(string: item.label, attributes: [
+                .foregroundColor: NSColor.white,
+                .font: NSFont.systemFont(ofSize: 11)
+            ])
+            cb.frame = NSRect(x: x, y: y, width: w, height: 18)
+            docView.addSubview(cb)
+            y -= 22
+        }
+
+        finalizeDocView(docView, startY: startY, currentY: y, width: width, minHeight: minH)
+        return docView
+    }
+
+    // MARK: - Codex Page
+
+    private func buildCodexPage(width: CGFloat, minH: CGFloat = 0) -> NSView {
+        let (docView, x, startY) = makeDocView(width: width)
+        var y = startY
+        let w = settingsColWidth
+        let codexEnabled = UserDefaults.standard.object(forKey: "agentEnabled:codex") as? Bool ?? false
+
+        let toggle = GlassToggle(title: "Codex", isOn: codexEnabled,
+                                  frame: NSRect(x: x, y: y, width: w, height: 22))
+        toggle.identifier = NSUserInterfaceItemIdentifier("agentEnable:codex")
+        toggle.target = self
+        toggle.action = #selector(agentEnableToggled(_:))
+        docView.addSubview(toggle)
+        y -= 38
+
+        guard codexEnabled else {
+            let hint = NSTextField(labelWithString: "Enable to configure Codex settings")
+            hint.font = NSFont.systemFont(ofSize: 11)
+            hint.textColor = NSColor(white: 1.0, alpha: 0.35)
+            hint.frame = NSRect(x: x, y: y, width: w, height: 14)
+            docView.addSubview(hint)
+            y -= 24
+            finalizeDocView(docView, startY: startY, currentY: y, width: width, minHeight: minH)
+            return docView
+        }
+
+        // Approval Policy
+        addFieldLabel("APPROVAL POLICY", to: docView, x: x, y: &y, width: w)
+        let currentApproval = CodexConfig.readApprovalPolicy()
+        _ = addPopup(["untrusted", "on-request", "never"], selected: currentApproval,
+                     to: docView, x: x, y: &y, width: w, action: #selector(codexApprovalChanged(_:)))
+
+        // Sandbox Mode
+        addFieldLabel("SANDBOX MODE", to: docView, x: x, y: &y, width: w)
+        let currentSandbox = CodexConfig.readSandboxMode()
+        _ = addPopup(["workspace-read", "workspace-write", "danger-full-access"], selected: currentSandbox,
+                     to: docView, x: x, y: &y, width: w, action: #selector(codexSandboxChanged(_:)))
+
+        addDescription("Applied on next Codex launch", to: docView, x: x, y: &y, width: w)
+
+        finalizeDocView(docView, startY: startY, currentY: y, width: width, minHeight: minH)
+        return docView
+    }
+
+    // MARK: - MCP Servers Page
+
+    private func buildMCPPage(width: CGFloat, minH: CGFloat = 0) -> NSView {
+        let mcpManager = MCPConfigManager.shared
+        let sortedServers = mcpManager.catalog.servers.sorted(by: { $0.key < $1.key })
+        let (docView, x, startY) = makeDocView(width: width)
+        var y = startY
+        let w = settingsColWidth
+
+        addSectionHeader("DEFAULT MCP SERVERS", to: docView, x: x, y: &y, width: w)
+        addDescription("Synced to Claude (.mcp.json) and Codex (config.toml)", to: docView, x: x, y: &y, width: w)
+
+        if sortedServers.isEmpty {
+            y -= 4
+            let emptyLabel = NSTextField(labelWithString: "No MCP servers configured")
+            emptyLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+            emptyLabel.textColor = NSColor(white: 1.0, alpha: 0.35)
+            emptyLabel.alignment = .center
+            emptyLabel.frame = NSRect(x: x + 4, y: y - 16, width: w - 8, height: 16)
+            docView.addSubview(emptyLabel)
+            y -= 24
+        } else {
+            for (name, server) in sortedServers {
+                y -= 26
+                let rowY = y
+
+                let toggle = NSButton(checkboxWithTitle: "", target: self,
+                                      action: #selector(mcpGlobalToggled(_:)))
+                toggle.state = server.enabledByDefault ? .on : .off
+                toggle.identifier = NSUserInterfaceItemIdentifier("mcpGlobal:" + name)
+                toggle.frame = NSRect(x: x + 4, y: rowY, width: 20, height: 18)
+                docView.addSubview(toggle)
+
+                let nameLabel = NSTextField(labelWithString: name)
+                nameLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+                nameLabel.textColor = .white
+                nameLabel.frame = NSRect(x: x + 30, y: rowY, width: w - 56, height: 16)
+                nameLabel.lineBreakMode = .byTruncatingTail
+                docView.addSubview(nameLabel)
+
+                let removeBtn = NSButton(frame: NSRect(x: x + w - 18, y: rowY + 1, width: 16, height: 16))
+                removeBtn.title = "×"
+                removeBtn.bezelStyle = .inline
+                removeBtn.isBordered = false
+                removeBtn.font = NSFont.systemFont(ofSize: 14, weight: .light)
+                removeBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.3)
+                removeBtn.identifier = NSUserInterfaceItemIdentifier("mcpRemove:" + name)
+                removeBtn.target = self
+                removeBtn.action = #selector(removeMCPServer(_:))
+                docView.addSubview(removeBtn)
+            }
+        }
+        y -= 42
+
+        _ = addButton("+ Add MCP Server", to: docView, x: x, y: &y, width: w,
+                      action: #selector(addMCPServer))
+
+        finalizeDocView(docView, startY: startY, currentY: y, width: width, minHeight: minH)
+        return docView
+    }
+
+    // MARK: - Starter Files Page
+
+    private func buildStartersPage(width: CGFloat, minH: CGFloat = 0) -> NSView {
+        let starterMgr = StarterManager.shared
+        let (docView, x, startY) = makeDocView(width: width)
+        var y = startY
+        let w = settingsColWidth
+
+        addSectionHeader("DEFAULT STARTER FILES", to: docView, x: x, y: &y, width: w)
+        addDescription("Templates written to new gems", to: docView, x: x, y: &y, width: w)
+
+        if starterMgr.starters.isEmpty {
+            y -= 4
+            let emptyLabel = NSTextField(labelWithString: "No starter files configured")
+            emptyLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+            emptyLabel.textColor = NSColor(white: 1.0, alpha: 0.35)
+            emptyLabel.alignment = .center
+            emptyLabel.frame = NSRect(x: x + 4, y: y - 16, width: w - 8, height: 16)
+            docView.addSubview(emptyLabel)
+            y -= 24
+        } else {
+            for starter in starterMgr.starters {
+                y -= 26
+                let rowY = y
+
+                let toggle = NSButton(checkboxWithTitle: "", target: self,
+                                      action: #selector(starterEnabledToggled(_:)))
+                toggle.state = starter.enabledByDefault ? .on : .off
+                toggle.identifier = NSUserInterfaceItemIdentifier("starterEnabled:\(starter.id.uuidString)")
+                toggle.frame = NSRect(x: x + 4, y: rowY, width: 20, height: 18)
+                docView.addSubview(toggle)
+
+                let nameLabel = NSTextField(labelWithString: starter.filename)
+                nameLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+                nameLabel.textColor = .white
+                nameLabel.lineBreakMode = .byTruncatingTail
+                nameLabel.frame = NSRect(x: x + 30, y: rowY, width: w - 82, height: 16)
+                docView.addSubview(nameLabel)
+
+                let editBtn = NSButton(frame: NSRect(x: x + w - 44, y: rowY, width: 22, height: 16))
+                editBtn.title = "✎"
+                editBtn.bezelStyle = .inline
+                editBtn.isBordered = false
+                editBtn.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+                editBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.5)
+                editBtn.identifier = NSUserInterfaceItemIdentifier("starterEdit:\(starter.id.uuidString)")
+                editBtn.target = self
+                editBtn.action = #selector(editStarter(_:))
+                docView.addSubview(editBtn)
+
+                let removeBtn = NSButton(frame: NSRect(x: x + w - 18, y: rowY + 1, width: 16, height: 16))
+                removeBtn.title = "×"
+                removeBtn.bezelStyle = .inline
+                removeBtn.isBordered = false
+                removeBtn.font = NSFont.systemFont(ofSize: 14, weight: .light)
+                removeBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.3)
+                removeBtn.identifier = NSUserInterfaceItemIdentifier("starterDelete:\(starter.id.uuidString)")
+                removeBtn.target = self
+                removeBtn.action = #selector(deleteStarter(_:))
+                docView.addSubview(removeBtn)
+            }
+        }
+        y -= 42
+
+        _ = addButton("+ Add Starter File", to: docView, x: x, y: &y, width: w,
+                      action: #selector(addStarter))
+
+        finalizeDocView(docView, startY: startY, currentY: y, width: width, minHeight: minH)
+        return docView
+    }
+
+    // MARK: - API Keys Page
+
+    private func buildAPIKeysPage(width: CGFloat, minH: CGFloat = 0) -> NSView {
+        let isPro = LicenseManager.shared.tier == .pro
+        let (docView, x, startY) = makeDocView(width: width)
+        var y = startY
+        let w = settingsColWidth
+
+        addSectionHeader("API KEYS", to: docView, x: x, y: &y, width: w)
+
+        if !isPro {
+            // Guild membership callout
+            let features = [
+                "Secure API key storage in Keychain",
+                "Auto-inject keys into every shell session",
+                "Private Slack community access",
+                "Priority support & early features",
+            ]
+            let lineH: CGFloat = 16
+            let headerH: CGFloat = 22
+            let listTopPad: CGFloat = 8
+            let boxPadV: CGFloat = 14
+            let boxH: CGFloat = boxPadV + headerH + listTopPad + (lineH * CGFloat(features.count)) + boxPadV
+            let box = NSView(frame: NSRect(x: x, y: y - boxH, width: w, height: boxH))
+            box.wantsLayer = true
+            box.layer?.borderWidth = 1
+            box.layer?.borderColor = NSColor(white: 1.0, alpha: 0.2).cgColor
+            box.layer?.cornerRadius = 8
+
+            let heading = NSTextField(labelWithString: "Join the Guild! Get access to:")
+            heading.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+            heading.textColor = NSColor(red: 0.55, green: 0.72, blue: 0.85, alpha: 1.0)
+            heading.frame = NSRect(x: 14, y: boxH - boxPadV - headerH, width: w - 28, height: headerH)
+            box.addSubview(heading)
+
+            var listY = boxH - boxPadV - headerH - listTopPad
+            for feature in features {
+                let item = NSTextField(labelWithString: "  ◇  \(feature)")
+                item.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+                item.textColor = NSColor(white: 1.0, alpha: 0.6)
+                item.frame = NSRect(x: 14, y: listY - lineH, width: w - 28, height: lineH)
+                box.addSubview(item)
+                listY -= lineH
+            }
+
+            docView.addSubview(box)
+            y -= (boxH + 16)
+
+            let hint = NSTextField(labelWithString: "Activate a license on the License page to join.")
+            hint.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+            hint.textColor = NSColor(white: 1.0, alpha: 0.35)
+            hint.frame = NSRect(x: x, y: y, width: w, height: 14)
+            docView.addSubview(hint)
+            y -= 20
+        }
+
+        if isPro {
+            addDescription("Injected into shell sessions as env vars", to: docView, x: x, y: &y, width: w)
+            let store = APIKeyStore.shared
+            for slot in apiKeySlots {
+                addFieldLabel(slot.name.uppercased(), to: docView, x: x, y: &y, width: w)
+
+                let existing = store.get(slot.envVar) ?? ""
+                let masked = existing.isEmpty ? "" : maskKey(existing)
+                let keyField = NSSecureTextField(string: "")
+                keyField.cell = VerticallyCenteredTextFieldCell(textCell: "")
+                (keyField.cell as? NSSecureTextFieldCell)?.echosBullets = true
+                keyField.placeholderString = existing.isEmpty ? slot.placeholder : masked
+                keyField.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+                keyField.textColor = .white
+                keyField.isBordered = false
+                keyField.isBezeled = false
+                keyField.drawsBackground = false
+                keyField.wantsLayer = true
+                keyField.layer?.backgroundColor = settingsFieldBg.cgColor
+                keyField.layer?.cornerRadius = 8
+                keyField.layer?.masksToBounds = true
+                keyField.frame = NSRect(x: x, y: y, width: w, height: 28)
+                keyField.identifier = NSUserInterfaceItemIdentifier("apiKey:\(slot.envVar)")
+                keyField.target = self
+                keyField.action = #selector(apiKeyChanged(_:))
+                docView.addSubview(keyField)
+                y -= 38
+            }
+        }
+
+        finalizeDocView(docView, startY: startY, currentY: y, width: width, minHeight: minH)
+        return docView
+    }
+
+    // MARK: - License Page
+
+    private func buildLicensePage(width: CGFloat, minH: CGFloat = 0) -> NSView {
+        let (docView, x, startY) = makeDocView(width: width)
+        var y = startY
+        let w = settingsColWidth
+
+        addSectionHeader("LICENSE", to: docView, x: x, y: &y, width: w)
+
+        let lm = LicenseManager.shared
+        switch lm.currentState {
+        case .valid(let payload):
+            let statusLabel = NSTextField(labelWithString: "GUILD MEMBER")
+            statusLabel.font = NSFont.systemFont(ofSize: 12, weight: .bold)
+            statusLabel.textColor = NSColor(red: 0.55, green: 0.75, blue: 0.95, alpha: 1.0)
+            statusLabel.frame = NSRect(x: x, y: y, width: w, height: 16)
+            docView.addSubview(statusLabel)
+            y -= 22
+
+            let emailLabel = NSTextField(labelWithString: payload.email)
+            emailLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+            emailLabel.textColor = NSColor(white: 1.0, alpha: 0.5)
+            emailLabel.frame = NSRect(x: x, y: y, width: w, height: 14)
+            docView.addSubview(emailLabel)
+            y -= 18
+
+            let expiryText = payload.isLifetime ? "Lifetime license" : "Expires: \(payload.expires)"
+            let expiryLabel = NSTextField(labelWithString: expiryText)
+            expiryLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+            expiryLabel.textColor = NSColor(white: 1.0, alpha: 0.5)
+            expiryLabel.frame = NSRect(x: x, y: y, width: w, height: 14)
+            docView.addSubview(expiryLabel)
+            y -= 30
+
+            _ = addButton("Deactivate License", to: docView, x: x, y: &y, width: w,
+                          tintColor: NSColor(red: 1.0, green: 0.5, blue: 0.5, alpha: 0.8),
+                          bgColor: NSColor(red: 0.5, green: 0.15, blue: 0.15, alpha: 0.4),
+                          action: #selector(deactivateLicense))
+
+        case .expired(let payload):
+            let statusLabel = NSTextField(labelWithString: "EXPIRED")
+            statusLabel.font = NSFont.systemFont(ofSize: 12, weight: .bold)
+            statusLabel.textColor = NSColor(red: 1.0, green: 0.5, blue: 0.3, alpha: 1.0)
+            statusLabel.frame = NSRect(x: x, y: y, width: w, height: 16)
+            docView.addSubview(statusLabel)
+            y -= 22
+
+            let infoLabel = NSTextField(labelWithString: "\(payload.email) — expired \(payload.expires)")
+            infoLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+            infoLabel.textColor = NSColor(white: 1.0, alpha: 0.5)
+            infoLabel.frame = NSRect(x: x, y: y, width: w, height: 14)
+            docView.addSubview(infoLabel)
+            y -= 30
+
+            addLicenseKeyInput(to: docView, x: x, y: &y, w: w)
+
+        case .unlicensed:
+            let statusLabel = NSTextField(labelWithString: "Free")
+            statusLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+            statusLabel.textColor = NSColor(white: 1.0, alpha: 0.5)
+            statusLabel.frame = NSRect(x: x, y: y, width: w, height: 16)
+            docView.addSubview(statusLabel)
+            y -= 30
+
+            addLicenseKeyInput(to: docView, x: x, y: &y, w: w)
+        }
+
+        finalizeDocView(docView, startY: startY, currentY: y, width: width, minHeight: minH)
+        return docView
+    }
+
+    private func addLicenseKeyInput(to docView: NSView, x: CGFloat, y: inout CGFloat, w: CGFloat) {
+        let keyField = NSTextField(string: "")
+        keyField.cell = VerticallyCenteredTextFieldCell(textCell: "")
+        keyField.placeholderString = "Paste license key"
+        keyField.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        keyField.textColor = .white
+        keyField.isBordered = false
+        keyField.isBezeled = false
+        keyField.drawsBackground = false
+        keyField.wantsLayer = true
+        keyField.layer?.backgroundColor = settingsFieldBg.cgColor
+        keyField.layer?.cornerRadius = 8
+        keyField.layer?.masksToBounds = true
+        keyField.frame = NSRect(x: x, y: y, width: w, height: 28)
+        keyField.identifier = NSUserInterfaceItemIdentifier("licenseKey")
+        docView.addSubview(keyField)
+        y -= 36
+
+        _ = addButton("Activate", to: docView, x: x, y: &y, width: w,
+                      tintColor: NSColor(red: 0.5, green: 1.0, blue: 0.7, alpha: 0.9),
+                      bgColor: NSColor(red: 0.2, green: 0.5, blue: 0.35, alpha: 0.5),
+                      action: #selector(activateLicense))
+    }
+
+    // MARK: - Navigation Action
+
+    @objc func settingsNavClicked(_ sender: NSButton) {
+        guard let raw = sender.identifier?.rawValue,
+              raw.hasPrefix("settingsNav:") else { return }
+        let pageName = String(raw.dropFirst(12))
+        guard let page = SettingsPage(rawValue: pageName) else { return }
+        settingsSelectedPage = page
+        rebuildSettings()
+    }
+
+    // MARK: - Settings Action Handlers
+
+    @objc func generalToggleChanged(_ sender: AnyObject) {
+        guard let toggle = sender as? GlassToggle,
+              let raw = toggle.identifier?.rawValue,
+              raw.hasPrefix("toggle:") else { return }
+        let key = String(raw.dropFirst(7))
+        let isOn = toggle.isOn
+
+        switch key {
+        case "crystalRail":
+            UserDefaults.standard.set(isOn, forKey: "crystalRailEnabled")
+            if let appDelegate = NSApp.delegate as? AppDelegate {
+                if isOn {
+                    appDelegate.rail?.panel.orderFront(nil)
+                } else {
+                    appDelegate.rail?.panel.orderOut(nil)
+                }
+            }
+        case "notifications":
+            UserDefaults.standard.set(isOn, forKey: "notificationsEnabled")
+            if !isOn {
+                // Dismiss all existing notifications
+                if let appDelegate = NSApp.delegate as? AppDelegate {
+                    appDelegate.dismissAllNotificationsClicked()
+                }
+            }
+        default:
+            break
+        }
+    }
+
     @objc func effortChanged(_ sender: NSPopUpButton) {
         guard let level = sender.selectedItem?.title else { return }
         onSettingsChanged?(["effortLevel": level])
@@ -798,8 +1085,6 @@ extension TerminalWindowController {
               raw.hasPrefix("notif:") else { return }
         let key = String(raw.dropFirst(6))
         let isOn = sender.state == .on
-
-        // Build partial update — only send the changed key
         let update: [String: Any] = ["enabledNotifications": [key: isOn]]
         onSettingsChanged?(update)
     }
@@ -822,12 +1107,7 @@ extension TerminalWindowController {
         guard let rawVal = raw, rawVal.hasPrefix("agentEnable:") else { return }
         let agent = String(rawVal.dropFirst(12))
         UserDefaults.standard.set(isOn, forKey: "agentEnabled:\(agent)")
-
-        // Rebuild settings to show/hide agent controls
-        flipToTerminal()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
-            self?.flipToSettings()
-        }
+        rebuildSettings()
     }
 
     @objc func codexApprovalChanged(_ sender: NSPopUpButton) {
@@ -848,12 +1128,6 @@ extension TerminalWindowController {
         guard var server = mgr.catalog.servers[name] else { return }
         server.enabledByDefault = sender.state == .on
         mgr.updateServer(name: name, server: server)
-
-        // Rebuild settings to reflect change
-        flipToTerminal()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
-            self?.flipToSettings()
-        }
     }
 
     @objc func addMCPServer() {
@@ -901,12 +1175,7 @@ extension TerminalWindowController {
             enabledByDefault: true
         )
         MCPConfigManager.shared.addServer(name: name, server: server)
-
-        // Rebuild settings to show new entry
-        flipToTerminal()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
-            self?.flipToSettings()
-        }
+        rebuildSettings()
     }
 
     @objc func removeMCPServer(_ sender: NSButton) {
@@ -924,12 +1193,7 @@ extension TerminalWindowController {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         MCPConfigManager.shared.removeServer(name: name)
-
-        // Rebuild settings
-        flipToTerminal()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
-            self?.flipToSettings()
-        }
+        rebuildSettings()
     }
 
     @objc func browseProjectsDir(_ sender: NSButton) {
@@ -967,11 +1231,35 @@ extension TerminalWindowController {
         let envVar = String(raw.dropFirst(7))
         let value = sender.stringValue.trimmingCharacters(in: .whitespaces)
         APIKeyStore.shared.set(envVar, value: value)
-        // Update placeholder to show masked key
         if !value.isEmpty {
             sender.placeholderString = maskKey(value)
         }
         sender.stringValue = ""
+    }
+
+    // MARK: - License Actions
+
+    @objc func activateLicense(_ sender: NSButton) {
+        guard let scrollView = settingsView?.subviews.compactMap({ $0 as? NSScrollView }).first,
+              let docView = scrollView.documentView else { return }
+        guard let keyField = docView.subviews.compactMap({ $0 as? NSTextField })
+                .first(where: { $0.identifier?.rawValue == "licenseKey" }) else { return }
+        let keyString = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !keyString.isEmpty else { return }
+
+        let result = LicenseManager.shared.activate(keyString)
+        switch result {
+        case .success:
+            rebuildSettings()
+        case .failure(let error):
+            keyField.stringValue = ""
+            keyField.placeholderString = error.localizedDescription
+        }
+    }
+
+    @objc func deactivateLicense(_ sender: NSButton) {
+        LicenseManager.shared.deactivate()
+        rebuildSettings()
     }
 
     /// Masks an API key for display: shows first 6 and last 4 chars.
@@ -1019,7 +1307,7 @@ extension TerminalWindowController {
     }
 
     /// Rebuilds the settings view in place (no flip animation).
-    private func rebuildSettings() {
+    func rebuildSettings() {
         guard let container = window.contentView, let old = settingsView else { return }
         old.removeFromSuperview()
         let newSettings = buildSettingsView()
@@ -1033,7 +1321,6 @@ extension TerminalWindowController {
         for sub in view.subviews {
             if let found = findView(in: sub, id: id) { return found }
         }
-        // Check inside scroll views
         if let sv = view as? NSScrollView, let doc = sv.documentView {
             if let found = findView(in: doc, id: id) { return found }
         }
@@ -1093,7 +1380,6 @@ class DemoRunner {
             setBridgeManualMode()
 
             // 5. Open demo projects — first one replaces current tab
-            let firstDir = demoDir + "/webapp"
             tc.projects[0].sessions.forEach { $0.terminalView.removeFromSuperview() }
             tc.projects.removeAll()
 
@@ -1202,7 +1488,7 @@ class DemoRunner {
                     let typeTime = Double(demoName.count) * 0.06 + 0.4
                     Thread.sleep(forTimeInterval: typeTime)
                     DispatchQueue.main.async {
-                        appDelegate.rail?.newProjectPanel.selectColor(4)  // pick a color
+                        appDelegate.rail?.newProjectPanel.selectColor(4)
                     }
                     Thread.sleep(forTimeInterval: 0.6)
                     DispatchQueue.main.async {
@@ -1431,7 +1717,6 @@ class DemoRunner {
     }
 }
 
-
 // ── Starter Editor Panel ──
 
 /// Floating glass panel for editing a starter file's filename and content.
@@ -1484,7 +1769,7 @@ class StarterEditorPanel: NSObject, NSTextFieldDelegate {
         let labelColor = NSColor(white: 1.0, alpha: 0.7)
         let fieldBg = NSColor(white: 1.0, alpha: 0.12)
         let pad: CGFloat = 16
-        var y0 = panelH - 48  // clear traffic light buttons
+        var y0 = panelH - 48
 
         // Title
         let title = NSTextField(labelWithString: "Edit Starter File")
@@ -1500,7 +1785,7 @@ class StarterEditorPanel: NSObject, NSTextFieldDelegate {
         fnLabel.textColor = labelColor
         fnLabel.frame = NSRect(x: pad, y: y0, width: panelW - pad * 2, height: 14)
         glass.addSubview(fnLabel)
-        y0 -= 28  // 14 label + 14 gap
+        y0 -= 28
 
         let fnField = NSTextField(string: starter.filename)
         fnField.cell = VerticallyCenteredTextFieldCell(textCell: starter.filename)
@@ -1517,7 +1802,7 @@ class StarterEditorPanel: NSObject, NSTextFieldDelegate {
         fnField.frame = NSRect(x: pad, y: y0, width: panelW - pad * 2, height: 28)
         glass.addSubview(fnField)
         self.filenameField = fnField
-        y0 -= 42  // 28 field + 14 gap
+        y0 -= 42
 
         // Content
         let contentLabel = NSTextField(labelWithString: "CONTENT")
@@ -1525,7 +1810,7 @@ class StarterEditorPanel: NSObject, NSTextFieldDelegate {
         contentLabel.textColor = labelColor
         contentLabel.frame = NSRect(x: pad, y: y0, width: panelW - pad * 2, height: 14)
         glass.addSubview(contentLabel)
-        y0 -= 20  // 14 label + 6 gap
+        y0 -= 20
 
         let editorH = y0 - 48
         let editorScroll = NSScrollView(frame: NSRect(x: pad, y: 48, width: panelW - pad * 2, height: editorH))
@@ -1634,7 +1919,6 @@ class CodexConfig {
         guard let content = try? String(contentsOfFile: configPath, encoding: .utf8) else { return nil }
         for line in content.components(separatedBy: .newlines) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            // Stop at first section header — only read top-level keys
             if trimmed.hasPrefix("[") && !trimmed.hasPrefix("[[") { break }
             if trimmed.hasPrefix(key) {
                 let parts = trimmed.components(separatedBy: "=")
@@ -1661,7 +1945,6 @@ class CodexConfig {
         var lines = content.components(separatedBy: "\n")
         let newLine = "\(key) = \"\(value)\""
 
-        // Find and replace existing key (only in top-level, before first [section])
         var found = false
         for (i, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -1674,7 +1957,6 @@ class CodexConfig {
         }
 
         if !found {
-            // Insert after last top-level key (before first section or at end)
             var insertIdx = 0
             for (i, line) in lines.enumerated() {
                 let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -1688,34 +1970,6 @@ class CodexConfig {
 
         content = lines.joined(separator: "\n")
         try? content.write(toFile: configPath, atomically: true, encoding: .utf8)
-    }
-}
-
-// ── Vertically Centered Text Field Cell ──
-
-class VerticallyCenteredTextFieldCell: NSTextFieldCell {
-    override func titleRect(forBounds rect: NSRect) -> NSRect {
-        var r = super.titleRect(forBounds: rect)
-        let stringHeight = attributedStringValue.boundingRect(
-            with: NSSize(width: r.width, height: .greatestFiniteMagnitude),
-            options: .usesLineFragmentOrigin
-        ).height
-        let offset = (r.height - stringHeight) / 2
-        r.origin.y += offset
-        r.size.height = stringHeight
-        return r
-    }
-
-    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
-        super.drawInterior(withFrame: titleRect(forBounds: cellFrame), in: controlView)
-    }
-
-    override func select(withFrame rect: NSRect, in controlView: NSView,
-                         editor textObj: NSText, delegate: Any?,
-                         start selStart: Int, length selLength: Int) {
-        super.select(withFrame: titleRect(forBounds: rect), in: controlView,
-                     editor: textObj, delegate: delegate,
-                     start: selStart, length: selLength)
     }
 }
 
