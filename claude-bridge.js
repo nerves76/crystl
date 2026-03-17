@@ -144,13 +144,16 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Validate bearer token on all endpoints
-  const authHeader = req.headers['authorization'] || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
-  if (token !== AUTH_TOKEN) {
-    res.writeHead(401, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Unauthorized' }));
-    return;
+  // Validate bearer token — exempt /hook since Claude Code hooks can't send auth headers
+  const isHookEndpoint = req.url && req.url.startsWith('/hook');
+  if (!isHookEndpoint) {
+    const authHeader = req.headers['authorization'] || '';
+    const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+    if (token !== AUTH_TOKEN) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unauthorized' }));
+      return;
+    }
   }
 
   // Health check
@@ -176,6 +179,7 @@ const server = http.createServer((req, res) => {
         tool_input: req.data.tool_input || {},
         cwd: req.data.cwd || '',
         session_id: req.data.session_id || '',
+        permission_suggestions: req.data.permission_suggestions || null,
         created: req.created
       });
     }
@@ -463,11 +467,34 @@ const server = http.createServer((req, res) => {
                 decision: { behavior: 'allow' }
               }
             }));
+          } else if (decision === 'allowAlways') {
+            // Echo back permission_suggestions so Claude won't ask again
+            const suggestions = hookData.permission_suggestions || [];
+            const updatedPermissions = suggestions.map(s => ({
+              ...s,
+              destination: 'localSettings'
+            }));
+            res.end(JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: 'PermissionRequest',
+                decision: {
+                  behavior: 'allow',
+                  updatedPermissions: updatedPermissions.length > 0 ? updatedPermissions : undefined
+                }
+              }
+            }));
           } else if (decision === 'deny') {
             res.end(JSON.stringify({
               hookSpecificOutput: {
                 hookEventName: 'PermissionRequest',
                 decision: { behavior: 'deny', message: 'Denied from Crystl' }
+              }
+            }));
+          } else if (decision === 'abort') {
+            res.end(JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: 'PermissionRequest',
+                decision: { behavior: 'abort', message: 'Aborted from Crystl' }
               }
             }));
           } else {

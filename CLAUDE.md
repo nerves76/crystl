@@ -43,7 +43,7 @@ Helpers.swift           Shared utilities: colors, mask images, session color map
 
 ```
 Claude Code --> HTTP hook --> claude-bridge.js (holds connection, port 19280)
-Crystl polls GET /pending --> shows approval panel --> user clicks Allow/Deny
+Crystl polls GET /pending --> shows approval panel --> user clicks Allow/Deny/Always
 Crystl sends POST /decide --> bridge resolves the held connection
 ```
 
@@ -55,6 +55,22 @@ Crystl sends POST /decide --> bridge resolves the held connection
 - **Gem ↔ Rail sync**: `TerminalWindowController` fires `onTabAdded/Removed/Selected/Updated` callbacks. `AppDelegate` wires these to `CrystalRailController` methods.
 - **Shell integration**: `ShellIntegration` overrides ZDOTDIR to inject zsh hooks that emit OSC 7770 sequences for command history tracking.
 - **Click-to-open**: Clicking on file paths in terminal output opens them in the default editor. Drag or multi-click is ignored (text selection still works normally).
+
+### Approval Panels
+
+Floating glass panels that appear when Claude Code requests tool permission. Three buttons plus one modifier shortcut cover all Claude Code permission behaviors:
+
+| Button | Decision | Behavior |
+|--------|----------|----------|
+| **Allow** | `allow` | Approve this one tool use |
+| **Always** | `allowAlways` | Approve and don't ask again (writes to local settings via `updatedPermissions`) |
+| **Deny** | `deny` | Reject this tool use |
+| **Option+Deny** | `abort` | Stop the entire Claude session |
+
+- **Allow** (green) is the default button (Enter key)
+- **Always** (blue) echoes back `permission_suggestions` from the request as `updatedPermissions` with `destination: 'localSettings'`
+- **Option+Deny** is a hidden power-user shortcut — no visible UI, detected via `NSApp.currentEvent?.modifierFlags.contains(.option)`
+- Hooks only fire inside Crystl terminals (guarded by `$TERM_PROGRAM = Crystl` in command-type hooks)
 
 ### Shards (Sub-tabs)
 
@@ -256,6 +272,7 @@ The New Gem panel (from rail "+" or "Gem Settings" button) includes:
 - `gitRemoteBaseUrl` — UserDefaults. Base URL for git remotes (e.g. `git@github.com:user/`). Auto-fills remote field in New Gem panel as `{baseUrl}{name}.git`.
 - `agentEnabled:claude` / `agentEnabled:codex` — UserDefaults (Bool). Enable/disable agent sections in settings. Claude defaults to `true`, Codex to `false`. Uses `GlassToggle` UI.
 - `crystalRailEnabled` — UserDefaults (Bool). Show/hide the Crystal Rail. Default: `true`.
+- `crystalRailSide` — UserDefaults (String). Which screen edge for the rail and floating panels: `"left"` or `"right"`. Default: `"left"`.
 - `notificationsEnabled` — UserDefaults (Bool). Show/hide floating notification panels. Default: `true`.
 - API keys — Keychain (`com.crystl.api-keys`). `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`. Injected into terminal sessions via `ShellIntegration.environment()`.
 - Bridge port `19280` — hardcoded in AppDelegate and build.sh.

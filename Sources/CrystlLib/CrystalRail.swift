@@ -79,9 +79,9 @@ class RailTileView: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         let menu = NSMenu()
-        let changeItem = NSMenuItem(title: "Change Icon...", action: #selector(changeIconClicked), keyEquivalent: "")
-        changeItem.target = self
-        menu.addItem(changeItem)
+        let settingsItem = NSMenuItem(title: "Gem Settings...", action: #selector(changeIconClicked), keyEquivalent: "")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
         NSMenu.popUpContextMenu(menu, with: event, for: self)
     }
 
@@ -380,7 +380,7 @@ class RailAddButton: NSView {
 
         // "+" text
         let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 18, weight: .ultraLight),
+            .font: NSFont.systemFont(ofSize: 18, weight: .light),
             .foregroundColor: NSColor(white: 1.0, alpha: 0.5)
         ]
         let str = "+" as NSString
@@ -392,6 +392,54 @@ class RailAddButton: NSView {
             height: sz.height
         )
         str.draw(in: textRect, withAttributes: attrs)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onClick?()
+    }
+}
+
+// MARK: - Rail Open Button
+
+/// A folder icon button for opening existing directories as gems.
+class RailOpenButton: NSView {
+    var onClick: (() -> Void)?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 8
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+
+        // Subtle background
+        ctx.setFillColor(NSColor(white: 1.0, alpha: 0.08).cgColor)
+        let bgPath = CGPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), cornerWidth: 8, cornerHeight: 8, transform: nil)
+        ctx.addPath(bgPath)
+        ctx.fillPath()
+
+        // Border
+        ctx.setStrokeColor(NSColor(white: 1.0, alpha: 0.15).cgColor)
+        ctx.setLineWidth(0.5)
+        ctx.addPath(bgPath)
+        ctx.strokePath()
+
+        // Folder icon
+        if let icon = LucideIcons.render(name: "folder", size: 14, color: NSColor(white: 1.0, alpha: 0.5)) {
+            let iconRect = NSRect(
+                x: (bounds.width - 14) / 2,
+                y: (bounds.height - 14) / 2,
+                width: 14,
+                height: 14
+            )
+            icon.draw(in: iconRect)
+        }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -437,7 +485,7 @@ class PaddedTextField: NSTextField {
     }
 }
 
-/// A floating glass input panel for creating a new project folder.
+/// A floating glass input panel for creating or editing a project.
 /// Includes name field, icon picker grid, and color picker.
 class NewProjectPanel: NSObject, NSTextFieldDelegate {
     private var panel: NSPanel?
@@ -449,6 +497,9 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
     private var starterCheckboxes: [(id: UUID, checkbox: NSButton)] = []
     private var gitInitCheckbox: NSButton?
     private var remoteField: NSTextField?
+    private var titleLabel: NSTextField?
+    private var submitButton: NSButton?
+    var isEditMode = false
     var onSubmit: ((String, String, String?, String?, Set<String>, Set<UUID>, Bool, String?) -> Void)?  // (name, path, iconName, colorHex, mcpServers, starterIds, gitInit, remote)
     var onDismiss: (() -> Void)?
 
@@ -464,12 +515,14 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
         let checkboxH = starterHeaderH + CGFloat(starterRows) * cbItemH +
             mcpHeaderH + CGFloat(mcpRows) * cbItemH +
             ((starterRows + mcpRows > 0) ? 8 : 0)
-        return 594 + checkboxH  // base + PATH + git init + remote field
+        let gitSectionH: CGFloat = isEditMode ? 0 : 66  // git init checkbox + remote field + spacing
+        return 528 + gitSectionH + checkboxH
     }
 
     func show(relativeTo railPanel: NSPanel) {
         let railFrame = railPanel.frame
-        let x = railFrame.maxX + 8
+        let isRight = UserDefaults.standard.string(forKey: "crystalRailSide") == "right"
+        let x = isRight ? railFrame.minX - 320 - 8 : railFrame.maxX + 8
         let y = railFrame.midY - (panelHeight / 2)
         show(at: NSPoint(x: x, y: y))
     }
@@ -514,6 +567,7 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
         p.isOpaque = false
         p.hasShadow = true
         p.isMovableByWindowBackground = false
+        p.appearance = NSAppearance(named: .darkAqua)
 
         let glass = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight))
         glass.material = .hudWindow
@@ -534,11 +588,12 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
         // Title + close button
         let titleH: CGFloat = 18
         y0 -= titleH
-        let label = NSTextField(labelWithString: "New Gem")
+        let label = NSTextField(labelWithString: isEditMode ? "Gem Settings" : "New Gem")
         label.font = NSFont.systemFont(ofSize: 14, weight: .semibold)
         label.textColor = .white
         label.frame = NSRect(x: sidePad, y: y0, width: contentW - 24, height: titleH)
         glass.addSubview(label)
+        titleLabel = label
 
         let closeBtn = NSButton(frame: NSRect(x: panelWidth - 32, y: y0, width: 18, height: 18))
         closeBtn.title = "×"
@@ -608,20 +663,23 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
         pathField = pField
         y0 -= fieldH + 10
 
-        // ── Git init checkbox ──
+        // ── Git init checkbox (new gems only) ──
         let gitCb = NSButton(checkboxWithTitle: "Initialize git repository", target: nil, action: nil)
-        gitCb.font = NSFont.systemFont(ofSize: 10, weight: .regular)
-        gitCb.contentTintColor = NSColor(white: 1.0, alpha: 0.7)
+        gitCb.attributedTitle = NSAttributedString(string: "Initialize git repository", attributes: [
+            .foregroundColor: NSColor.white,
+            .font: NSFont.systemFont(ofSize: 10, weight: .regular)
+        ])
         let cbSize = gitCb.fittingSize
         gitCb.frame = NSRect(x: sidePad, y: y0 - cbSize.height, width: contentW, height: cbSize.height)
         gitCb.state = .on
+        gitCb.isHidden = isEditMode
         glass.addSubview(gitCb)
         gitInitCheckbox = gitCb
         gitCb.target = self
         gitCb.action = #selector(gitInitToggled(_:))
-        y0 -= cbSize.height + 8
+        if !isEditMode { y0 -= cbSize.height + 8 }
 
-        // ── Remote field (shown when git init is checked) ──
+        // ── Remote field (new gems only, shown when git init is checked) ──
         let baseUrl = UserDefaults.standard.string(forKey: "gitRemoteBaseUrl") ?? ""
         let rField = PaddedTextField(frame: NSRect(x: sidePad, y: y0 - fieldH, width: contentW, height: fieldH))
         rField.placeholderString = "origin remote URL"
@@ -636,9 +694,10 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
         rField.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.12).cgColor
         rField.layer?.cornerRadius = 8
         rField.layer?.masksToBounds = true
+        rField.isHidden = isEditMode
         glass.addSubview(rField)
         remoteField = rField
-        y0 -= fieldH + 10
+        if !isEditMode { y0 -= fieldH + 10 }
 
         // ── Color section ──
         let colorLabel = NSTextField(labelWithString: "COLOR")
@@ -767,7 +826,7 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
 
         // ── Create button ──
         let createBtn = NSButton(frame: NSRect(x: sidePad, y: bottomPad, width: contentW, height: btnH))
-        createBtn.title = "Create Gem"
+        createBtn.title = isEditMode ? "Save" : "Create Gem"
         createBtn.bezelStyle = .rounded
         createBtn.isBordered = false
         createBtn.wantsLayer = true
@@ -778,6 +837,7 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
         createBtn.target = self
         createBtn.action = #selector(createClicked)
         glass.addSubview(createBtn)
+        submitButton = createBtn
 
         p.contentView = glass
         p.orderFrontRegardless()
@@ -873,16 +933,19 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
     }
 
     private func makeCheckbox(_ title: String, checked: Bool, width: CGFloat) -> NSButton {
-        let cb = NSButton(checkboxWithTitle: title, target: nil, action: nil)
+        let cb = NSButton(checkboxWithTitle: "", target: nil, action: nil)
         cb.state = checked ? .on : .off
-        // Truncate title with attributed string
-        let para = NSMutableParagraphStyle()
-        para.lineBreakMode = .byTruncatingTail
-        cb.attributedTitle = NSAttributedString(string: title, attributes: [
-            .foregroundColor: NSColor.white,
-            .font: NSFont.systemFont(ofSize: 11),
-            .paragraphStyle: para
-        ])
+        cb.setButtonType(.switch)
+
+        // Add a white label since NSButton checkbox ignores attributedTitle color
+        let labelX: CGFloat = 20
+        let label = NSTextField(labelWithString: title)
+        label.font = NSFont.systemFont(ofSize: 11)
+        label.textColor = .white
+        label.lineBreakMode = .byTruncatingTail
+        label.frame = NSRect(x: labelX, y: 0, width: width - labelX, height: 16)
+        cb.addSubview(label)
+
         return cb
     }
 
@@ -1070,6 +1133,7 @@ class CrystalRailController {
     var onTileClicked: ((UUID) -> Void)?
     var onFolderDropped: ((String) -> Void)?
     var onAddClicked: (() -> Void)?
+    var onOpenClicked: (() -> Void)?
     var onNewProject: ((String, String, String?, String?, Set<String>, Set<UUID>, Bool, String?) -> Void)?  // (name, path, iconName, colorHex, mcpServers, starterIds, gitInit, remote)
     var onChangeIcon: ((UUID) -> Void)?
     var onSettingsIconClicked: ((NSView) -> Void)?
@@ -1082,11 +1146,19 @@ class CrystalRailController {
     private let topPadding: CGFloat = 8
     private let iconSize: CGFloat = 28     // Crystl logo at top
     private let addButtonSize: CGFloat = 28 // "+" button at bottom
-    private let sectionSpacing: CGFloat = 10 // space between icon/tiles/button
+    private let openButtonSize: CGFloat = 28 // folder button at bottom
+    private let buttonSpacing: CGFloat = 6  // space between + and folder buttons
+    private let sectionSpacing: CGFloat = 10 // space between icon/tiles
+    private let dividerSpacing: CGFloat = 10 // space above and below divider line
     private let railMargin: CGFloat = 6
+    var isRightSide: Bool {
+        UserDefaults.standard.string(forKey: "crystalRailSide") == "right"
+    }
     private var contentView: NSView!
     var iconView: NSView?
     private var addButton: NSView?
+    private var openButton: NSView?
+    private var dividerLine: NSView?
 
     func setup() {
         guard let screen = NSScreen.main else { return }
@@ -1095,9 +1167,10 @@ class CrystalRailController {
         // Start with a minimal height — layoutTiles will resize to fit content
         let initialHeight: CGFloat = tileSize + (topPadding * 2)
         let y = screenFrame.midY - (initialHeight / 2)
+        let railX = isRightSide ? screenFrame.maxX - railWidth - railMargin : screenFrame.minX + railMargin
         panel = NSPanel(
             contentRect: NSRect(
-                x: screenFrame.minX + railMargin,
+                x: railX,
                 y: y,
                 width: railWidth,
                 height: initialHeight
@@ -1167,6 +1240,13 @@ class CrystalRailController {
         glass.addSubview(iconBtn)
         iconView = iconBtn
 
+        // Divider line above buttons
+        let divider = NSView(frame: NSRect(x: 6, y: 0, width: railWidth - 12, height: 1))
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.15).cgColor
+        glass.addSubview(divider)
+        dividerLine = divider
+
         // "+" button at bottom
         let addBtn = RailAddButton(frame: NSRect(x: (railWidth - addButtonSize) / 2, y: 0, width: addButtonSize, height: addButtonSize))
         addBtn.onClick = { [weak self] in
@@ -1177,6 +1257,14 @@ class CrystalRailController {
         }
         glass.addSubview(addBtn)
         addButton = addBtn
+
+        // Folder "open" button below "+"
+        let openBtn = RailOpenButton(frame: NSRect(x: (railWidth - openButtonSize) / 2, y: 0, width: openButtonSize, height: openButtonSize))
+        openBtn.onClick = { [weak self] in
+            self?.onOpenClicked?()
+        }
+        glass.addSubview(openBtn)
+        openButton = openBtn
 
         contentView = glass
         glassView = glass
@@ -1196,11 +1284,23 @@ class CrystalRailController {
         }
     }
 
-    // MARK: - New Project
+    // MARK: - New / Edit Project
 
     func showNewProjectPanel() {
         guard let p = panel else { return }
+        newProjectPanel.isEditMode = false
         newProjectPanel.show(relativeTo: p)
+    }
+
+    func showEditPanel(for tabId: UUID) {
+        guard let p = panel,
+              let tileView = tileViews[tabId] else { return }
+        newProjectPanel.isEditMode = true
+        // Position panel adjacent to the rail, vertically aligned with the tile
+        let tileScreenFrame = tileView.window?.convertToScreen(tileView.convert(tileView.bounds, to: nil)) ?? p.frame
+        let x = isRightSide ? p.frame.minX - 320 - 8 : p.frame.maxX + 8
+        let y = tileScreenFrame.midY - (newProjectPanel.panelHeight / 2)
+        newProjectPanel.show(at: NSPoint(x: x, y: y))
     }
 
     // MARK: - Tile Management
@@ -1313,22 +1413,30 @@ class CrystalRailController {
 
     // MARK: - Layout
 
+    /// Repositions the rail to the current side (left/right) without animation.
+    func repositionRail() {
+        layoutTiles()
+    }
+
     private func layoutTiles() {
         guard panel != nil, let screen = NSScreen.main else { return }
         let screenFrame = screen.visibleFrame
 
-        // Layout: [padding] [icon] [spacing] [tiles...] [spacing] [+button] [padding]
+        // Layout: [padding] [icon] [spacing] [tiles...] [dividerSpacing] [divider 1px] [dividerSpacing] [+button] [gap] [folder] [padding]
         let tileCount = max(tiles.count, 0)
         let tilesHeight = CGFloat(tileCount) * tileSize + CGFloat(max(tileCount - 1, 0)) * tileSpacing
-        let panelHeight = topPadding + iconSize + sectionSpacing + tilesHeight + sectionSpacing + addButtonSize + topPadding
+        let buttonsHeight = addButtonSize + buttonSpacing + openButtonSize
+        let dividerHeight: CGFloat = 1 + dividerSpacing * 2
+        let panelHeight = topPadding + iconSize + sectionSpacing + tilesHeight + dividerHeight + buttonsHeight + topPadding
 
         // Center vertically on screen
         let y = screenFrame.midY - (panelHeight / 2)
+        let railX = isRightSide ? screenFrame.maxX - railWidth - railMargin : screenFrame.minX + railMargin
 
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.25
             ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.3, 1.0)
-            panel.animator().setFrame(NSRect(x: screenFrame.minX + railMargin, y: y, width: railWidth, height: panelHeight), display: true)
+            panel.animator().setFrame(NSRect(x: railX, y: y, width: railWidth, height: panelHeight), display: true)
         }
 
         // Update glass view and mask to match new size
@@ -1356,8 +1464,13 @@ class CrystalRailController {
             }
         }
 
-        // Position "+" button at bottom
-        addButton?.frame = NSRect(x: (railWidth - addButtonSize) / 2, y: topPadding, width: addButtonSize, height: addButtonSize)
+        // Position buttons at bottom: folder at very bottom, "+" above it
+        openButton?.frame = NSRect(x: (railWidth - openButtonSize) / 2, y: topPadding, width: openButtonSize, height: openButtonSize)
+        addButton?.frame = NSRect(x: (railWidth - addButtonSize) / 2, y: topPadding + openButtonSize + buttonSpacing, width: addButtonSize, height: addButtonSize)
+
+        // Divider line above buttons
+        let dividerY = topPadding + buttonsHeight + dividerSpacing
+        dividerLine?.frame = NSRect(x: 6, y: dividerY, width: railWidth - 12, height: 1)
     }
 
     // MARK: - Animations

@@ -8,6 +8,7 @@ struct PendingRequest: Codable, Equatable {
     let tool_input: [String: AnyCodable]?
     let cwd: String?
     let session_id: String?
+    let permission_suggestions: [AnyCodable]?
     let created: Double
 
     static func == (lhs: PendingRequest, rhs: PendingRequest) -> Bool {
@@ -43,7 +44,11 @@ struct HookNotification: Codable, Equatable {
     /// Human-readable headline for the notification panel
     var headline: String {
         switch type {
-        case "Stop":              return "Claude finished"
+        case "Stop":
+            if let msg = message, msg.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?") {
+                return "Claude has a question"
+            }
+            return "Claude finished"
         case "SessionEnd":        return "Session ended"
         case "PostToolUse":       return "Tool completed: \(tool_name ?? "Unknown")"
         case "PostToolUseFailure":return "Tool failed: \(tool_name ?? "Unknown")"

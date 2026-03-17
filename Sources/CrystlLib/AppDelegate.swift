@@ -15,7 +15,7 @@
 
 import Cocoa
 
-public class AppDelegate: NSObject, NSApplicationDelegate {
+public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     public override init() { super.init() }
     var terminalController: TerminalWindowController!
     var rail: CrystalRailController?
@@ -135,6 +135,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         }
         r.onChangeIcon = { [weak self] tabId in
             self?.showIconPicker(for: tabId)
+        }
+        r.onOpenClicked = { [weak self] in
+            self?.openGemFromPicker()
         }
         r.onSettingsIconClicked = { [weak self] view in
             self?.showRailSettingsMenu(from: view)
@@ -340,9 +343,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         let itemCount = CGFloat(modes.count + 1)  // +1 for Pause All
         let panelHeight: CGFloat = topPad + headerLabelH + headerGap + itemCount * itemHeight + (itemCount - 1) * itemGap + bottomPad
 
-        // Position to the right of the rail icon
+        // Position adjacent to the rail icon
         let iconScreenFrame = view.window!.convertToScreen(view.convert(view.bounds, to: nil))
-        let x = iconScreenFrame.maxX + 16
+        let isRight = UserDefaults.standard.string(forKey: "crystalRailSide") == "right"
+        let x = isRight ? iconScreenFrame.minX - panelWidth - 16 : iconScreenFrame.maxX + 16
         let y = iconScreenFrame.midY - panelHeight / 2
 
         let (panel, glass) = makeGlassPanel(
@@ -432,6 +436,35 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    /// Opens an NSOpenPanel to pick a folder, creates a gem, and writes `cd /path` to the terminal.
+    private func openGemFromPicker() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Open"
+        panel.message = "Choose a directory to open as a gem"
+
+        // Default to projects directory
+        let projectsDir = UserDefaults.standard.string(forKey: "projectsDirectory") ?? ("~/Projects" as NSString).expandingTildeInPath
+        panel.directoryURL = URL(fileURLWithPath: projectsDir)
+
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            let path = url.path
+            guard self?.openFolder(path) == true else { return }
+
+            // Write cd command to the new session as a teaching moment
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let tc = self?.terminalController,
+                      let project = tc.projects.last,
+                      let session = project.sessions.first else { return }
+                let escaped = "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+                session.terminalView.send(txt: "cd \(escaped)\n")
+            }
+        }
+    }
+
     // ── Menu Actions ──
 
     @objc public func newShard() {
@@ -496,8 +529,16 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         }.resume()
     }
 
-    /// Left edge for all floating panels — shifted right to clear the Crystal Rail.
-    var panelLeftEdge: CGFloat { rail != nil ? 72 : 16 }
+    /// X coordinate for all floating panels (300px wide), shifted to clear the Crystal Rail.
+    var panelX: CGFloat {
+        guard let screen = NSScreen.main else { return 72 }
+        let screenFrame = screen.visibleFrame
+        let margin: CGFloat = rail != nil ? 72 : 16
+        if UserDefaults.standard.string(forKey: "crystalRailSide") == "right" {
+            return screenFrame.maxX - 300 - margin
+        }
+        return margin
+    }
 
     // ── Unified Panel Layout ──
     // All floating panels share a single vertical stack from the top of the screen.
@@ -508,7 +549,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     func layoutAllPanels() {
         guard let screen = NSScreen.main else { return }
         let screenFrame = screen.visibleFrame
-        let x: CGFloat = panelLeftEdge
+        let x: CGFloat = panelX
         var cursorY = screenFrame.maxY - 16  // start 16px below top
 
         // "Dismiss All" bar (only if 2+ notification panels)
@@ -602,7 +643,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard let screen = NSScreen.main else { return }
         let screenFrame = screen.visibleFrame
-        let x: CGFloat = panelLeftEdge
+        let x: CGFloat = panelX
         // Place off-screen initially; layoutAllPanels() will position it
         let y = screenFrame.maxY + panelHeight
 
@@ -611,7 +652,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             cornerRadius: 12, glassAlpha: currentOpacity, borderAlpha: 0.12, movable: true
         )
 
-        let sessColor = colorForSession(request.session_id)
+        // Peach tint for permission panels
+        let panelTint = NSColor(red: 1.0, green: 0.7, blue: 0.5, alpha: 1.0)
 
         // Tab name — match by cwd to a terminal tab, fall back to folder name
         let cwd = request.cwd ?? ""
@@ -630,7 +672,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             let iconSize: CGFloat = 18
             let matchedProject = terminalController.projects.first(where: { $0.directory == cwd })
                 ?? terminalController.projects.first(where: { cwd.hasPrefix($0.directory) || $0.directory.hasPrefix(cwd) })
-            let iconColor = matchedProject?.color ?? sessColor
+            let iconColor = matchedProject?.color ?? panelTint
             if let project = matchedProject,
                let iconName = project.iconName,
                let icon = LucideIcons.render(name: iconName, size: iconSize, color: iconColor) {
@@ -650,7 +692,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         // Tool name — smaller subtitle
         let toolLabel = NSTextField(labelWithString: request.tool_name)
         toolLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        toolLabel.textColor = sessColor.withAlphaComponent(0.8)
+        toolLabel.textColor = panelTint.withAlphaComponent(0.8)
         let toolY = tabName.isEmpty ? panelHeight - 30 : panelHeight - 50
         toolLabel.frame = NSRect(x: 16, y: toolY, width: panelWidth - 80, height: 16)
         glass.addSubview(toolLabel)
@@ -681,8 +723,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             glass.addSubview(detailLabel)
         }
 
-        // Buttons
-        let btnWidth = (panelWidth - 44) / 2
+        // Buttons — 3 columns: Deny | Always | Allow
+        let btnSpacing: CGFloat = 5
+        let totalBtnWidth = panelWidth - 28  // 14px padding each side
+        let btnWidth = (totalBtnWidth - btnSpacing * 2) / 3
         let btnHeight: CGFloat = 28
 
         let denyBtn = NSButton(frame: NSRect(x: 14, y: 8, width: btnWidth, height: btnHeight))
@@ -692,21 +736,35 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         denyBtn.wantsLayer = true
         denyBtn.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.1).cgColor
         denyBtn.layer?.cornerRadius = 8
-        denyBtn.font = NSFont.systemFont(ofSize: 13, weight: .medium)
+        denyBtn.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         denyBtn.contentTintColor = NSColor(white: 1.0, alpha: 0.5)
         denyBtn.target = self
         denyBtn.action = #selector(denyClicked(_:))
         denyBtn.identifier = NSUserInterfaceItemIdentifier(request.id)
         glass.addSubview(denyBtn)
 
-        let allowBtn = NSButton(frame: NSRect(x: panelWidth / 2 + 2, y: 8, width: btnWidth, height: btnHeight))
+        let alwaysBtn = NSButton(frame: NSRect(x: 14 + btnWidth + btnSpacing, y: 8, width: btnWidth, height: btnHeight))
+        alwaysBtn.title = "Always"
+        alwaysBtn.bezelStyle = .rounded
+        alwaysBtn.isBordered = false
+        alwaysBtn.wantsLayer = true
+        alwaysBtn.layer?.backgroundColor = NSColor.systemBlue.withAlphaComponent(0.2).cgColor
+        alwaysBtn.layer?.cornerRadius = 8
+        alwaysBtn.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        alwaysBtn.contentTintColor = NSColor.systemBlue
+        alwaysBtn.target = self
+        alwaysBtn.action = #selector(allowAlwaysClicked(_:))
+        alwaysBtn.identifier = NSUserInterfaceItemIdentifier(request.id)
+        glass.addSubview(alwaysBtn)
+
+        let allowBtn = NSButton(frame: NSRect(x: 14 + (btnWidth + btnSpacing) * 2, y: 8, width: btnWidth, height: btnHeight))
         allowBtn.title = "Allow"
         allowBtn.bezelStyle = .rounded
         allowBtn.isBordered = false
         allowBtn.wantsLayer = true
         allowBtn.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.3).cgColor
         allowBtn.layer?.cornerRadius = 8
-        allowBtn.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        allowBtn.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
         allowBtn.contentTintColor = NSColor.systemGreen
         allowBtn.target = self
         allowBtn.action = #selector(allowClicked(_:))
@@ -730,7 +788,14 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func denyClicked(_ sender: NSButton) {
         guard let id = sender.identifier?.rawValue else { return }
-        sendDecision(id: id, decision: "deny")
+        let isAbort = NSApp.currentEvent?.modifierFlags.contains(.option) ?? false
+        sendDecision(id: id, decision: isAbort ? "abort" : "deny")
+        dismissPanel(id: id)
+    }
+
+    @objc func allowAlwaysClicked(_ sender: NSButton) {
+        guard let id = sender.identifier?.rawValue else { return }
+        sendDecision(id: id, decision: "allowAlways")
         dismissPanel(id: id)
     }
 
@@ -781,7 +846,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard let screen = NSScreen.main else { return }
         let screenFrame = screen.visibleFrame
-        let x: CGFloat = panelLeftEdge
+        let x: CGFloat = panelX
 
         if let existing = allowAllPanel {
             if let btn = existing.contentView?.subviews.compactMap({ $0 as? NSButton }).first {
@@ -892,7 +957,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard let screen = NSScreen.main else { return }
         let screenFrame = screen.visibleFrame
-        let x: CGFloat = panelLeftEdge
+        let x: CGFloat = panelX
         // Place off-screen initially; layoutAllPanels() will position it
         let y = screenFrame.maxY + cardHeight
 
@@ -901,7 +966,11 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             cornerRadius: 12, glassAlpha: currentOpacity, borderAlpha: 0.12
         )
 
-        let sessColor = colorForSession(notif.session_id ?? "")
+        // Color by notification type: green for questions, light blue for general notifications
+        let isQuestion = notif.type == "Stop" && notif.message?.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?") == true
+        let notifTint = isQuestion
+            ? NSColor(red: 0.4, green: 0.8, blue: 0.5, alpha: 1.0)   // green
+            : NSColor(red: 0.5, green: 0.7, blue: 0.9, alpha: 1.0)   // light blue
 
         // Project name — match by cwd to a terminal tab, fall back to folder name
         let cwd = notif.cwd ?? ""
@@ -919,7 +988,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             let iconSize: CGFloat = 18
             let matchedProject = terminalController.projects.first(where: { $0.directory == cwd })
                 ?? terminalController.projects.first(where: { cwd.hasPrefix($0.directory) || $0.directory.hasPrefix(cwd) })
-            let iconColor = matchedProject?.color ?? sessColor
+            let iconColor = matchedProject?.color ?? notifTint
             if let project = matchedProject,
                let iconName = project.iconName,
                let icon = LucideIcons.render(name: iconName, size: iconSize, color: iconColor) {
@@ -953,7 +1022,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         let headlineText = shardName != nil ? "\(shardName!): \(notif.headline)" : notif.headline
         let headlineLabel = NSTextField(labelWithString: headlineText)
         headlineLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        headlineLabel.textColor = sessColor.withAlphaComponent(0.8)
+        headlineLabel.textColor = notifTint.withAlphaComponent(0.8)
         let headlineY = tabName.isEmpty ? cardHeight - 30 : cardHeight - 50
         headlineLabel.frame = NSRect(x: 16, y: headlineY, width: cardWidth - 80, height: 16)
         headlineLabel.lineBreakMode = .byTruncatingTail
@@ -1057,7 +1126,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard let screen = NSScreen.main else { return }
         let screenFrame = screen.visibleFrame
-        let x: CGFloat = panelLeftEdge
+        let x: CGFloat = panelX
 
         if let existing = dismissAllNotificationsPanel {
             if let btn = existing.contentView?.subviews.compactMap({ $0 as? NSButton }).first {
@@ -1115,6 +1184,28 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Highlights all notification Dismiss buttons to simulate a click (for demo).
+    func highlightNotificationDismissButtons() {
+        // "Dismiss All" bar button
+        if let glass = dismissAllNotificationsPanel?.contentView {
+            for sub in glass.subviews {
+                if let btn = sub as? NSButton {
+                    btn.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.3).cgColor
+                }
+            }
+        }
+        // Individual dismiss buttons
+        for (_, panel) in notificationPanels {
+            guard let glass = panel.contentView else { continue }
+            for sub in glass.subviews {
+                if let btn = sub as? NSButton,
+                   btn.identifier?.rawValue.hasPrefix("ndismiss_") == true {
+                    btn.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.3).cgColor
+                }
+            }
+        }
+    }
+
     // ── Process Finished Notification ──
     // Small card shown at the top-left when a terminal process exits.
     // Persists until manually dismissed via the X button.
@@ -1125,7 +1216,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         guard let screen = NSScreen.main else { return }
         let screenFrame = screen.visibleFrame
-        let x: CGFloat = panelLeftEdge
+        let x: CGFloat = panelX
         // Place off-screen initially; layoutAllPanels() will position it
         let y = screenFrame.maxY + cardHeight
 
@@ -1323,6 +1414,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         let project = tc.selectedProject
         let panel = NewProjectPanel()
+        panel.isEditMode = true  // "Gem Settings" button always means editing
 
         panel.onSubmit = { [weak self, weak tc] name, projectPath, iconName, colorHex, mcpServers, starterIds, gitInit, remote in
             guard let self = self, let tc = tc else { return }
@@ -1364,16 +1456,22 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             self.setupPanel = nil
         }
 
-        // Position relative to the terminal window
-        let winFrame = tc.window.frame
+        // Position above the "Gem Settings" button
         let panelW: CGFloat = 320
-        let panelH = panel.panelHeight
-        let x = winFrame.midX - panelW / 2
-        let y = winFrame.origin.y + 60
-        panel.show(at: NSPoint(x: x, y: y))
+        if let setupBtn = tc.setupButton {
+            let btnScreenFrame = setupBtn.window?.convertToScreen(setupBtn.convert(setupBtn.bounds, to: nil)) ?? .zero
+            let x = btnScreenFrame.midX - panelW / 2
+            let y = btnScreenFrame.maxY + 8
+            panel.show(at: NSPoint(x: x, y: y))
+        } else {
+            let winFrame = tc.window.frame
+            let x = winFrame.midX - panelW / 2
+            let y = winFrame.origin.y + 60
+            panel.show(at: NSPoint(x: x, y: y))
+        }
 
         // Pre-populate with existing project data
-        if let project = project, !project.isUnconfigured {
+        if let project = project {
             panel.populate(
                 name: project.title,
                 path: project.directory,
@@ -1444,5 +1542,40 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc public func openHelp() {
         NSWorkspace.shared.open(URL(string: "https://github.com/nerves76/crystl")!)
+    }
+
+    // MARK: - Rail Position Menu
+
+    @objc public func setRailLeft() {
+        setRailSide("left")
+    }
+
+    @objc public func setRailRight() {
+        setRailSide("right")
+    }
+
+    private func setRailSide(_ side: String) {
+        UserDefaults.standard.set(side, forKey: "crystalRailSide")
+        rail?.repositionRail()
+        layoutAllPanels()
+        // Update settings popup if visible
+        if terminalController.isShowingSettings,
+           let popup = terminalController.findView(in: terminalController.settingsView!, id: "railSidePicker") as? NSPopUpButton {
+            popup.selectItem(withTitle: side == "right" ? "Right" : "Left")
+        }
+    }
+
+    public func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(setRailLeft) {
+            let isLeft = UserDefaults.standard.string(forKey: "crystalRailSide") != "right"
+            menuItem.state = isLeft ? .on : .off
+            return true
+        }
+        if menuItem.action == #selector(setRailRight) {
+            let isRight = UserDefaults.standard.string(forKey: "crystalRailSide") == "right"
+            menuItem.state = isRight ? .on : .off
+            return true
+        }
+        return true
     }
 }

@@ -69,6 +69,13 @@ let viewMenu = NSMenu(title: "View")
 let fullScreen = NSMenuItem(title: "Toggle Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
 fullScreen.keyEquivalentModifierMask = [.command, .control]
 viewMenu.addItem(fullScreen)
+viewMenu.addItem(NSMenuItem.separator())
+let railSideItem = NSMenuItem(title: "Rail Position", action: nil, keyEquivalent: "")
+let railSideMenu = NSMenu(title: "Rail Position")
+railSideMenu.addItem(item("Left", action: #selector(AppDelegate.setRailLeft), key: ""))
+railSideMenu.addItem(item("Right", action: #selector(AppDelegate.setRailRight), key: ""))
+railSideItem.submenu = railSideMenu
+viewMenu.addItem(railSideItem)
 viewMenuItem.submenu = viewMenu
 mainMenu.addItem(viewMenuItem)
 

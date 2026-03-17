@@ -40,27 +40,14 @@ let presetColors: [NSColor] = [
 class ColorGridView: NSView {
     var selectedColor: NSColor = presetColors[0]
     var onColorChanged: ((NSColor) -> Void)?
-    private let dotSize: CGFloat = 18
-    private let dotSpacing: CGFloat = 4
-    private let fadeWidth: CGFloat = 14
+    private let dotSize: CGFloat = 16
+    private let dotSpacing: CGFloat = 2
+    private let fadeWidth: CGFloat = 0
 
     override func layout() {
         super.layout()
         wantsLayer = true
-        let mask = CAGradientLayer()
-        mask.frame = bounds
-        mask.colors = [
-            CGColor(gray: 0, alpha: 0),
-            CGColor(gray: 0, alpha: 1),
-            CGColor(gray: 0, alpha: 1),
-            CGColor(gray: 0, alpha: 0),
-        ]
-        let fadeFrac = NSNumber(value: Double(fadeWidth / bounds.width))
-        let endFrac = NSNumber(value: 1.0 - fadeFrac.doubleValue)
-        mask.locations = [0, fadeFrac, endFrac, 1.0]
-        mask.startPoint = CGPoint(x: 0, y: 0.5)
-        mask.endPoint = CGPoint(x: 1, y: 0.5)
-        layer?.mask = mask
+        layer?.mask = nil
     }
 
     override func draw(_ dirtyRect: NSRect) {

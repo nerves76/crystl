@@ -73,6 +73,14 @@ extension TerminalWindowController {
         docView.addSubview(railToggle)
         y -= 32
 
+        // Rail side picker
+        addFieldLabel("RAIL POSITION", to: docView, x: x, y: &y, width: w)
+        let currentSide = UserDefaults.standard.string(forKey: "crystalRailSide") ?? "left"
+        let sidePopup = addPopup(["Left", "Right"], selected: currentSide == "right" ? "Right" : "Left",
+                                  to: docView, x: x, y: &y, width: w,
+                                  action: #selector(railSideChanged(_:)))
+        sidePopup.identifier = NSUserInterfaceItemIdentifier("railSidePicker")
+
         let notifsOn = UserDefaults.standard.object(forKey: "notificationsEnabled") as? Bool ?? true
         let notifToggle = GlassToggle(title: "Notifications", isOn: notifsOn,
                                        frame: NSRect(x: x, y: y, width: w, height: 22))
@@ -117,6 +125,15 @@ extension TerminalWindowController {
             }
         default:
             break
+        }
+    }
+
+    @objc func railSideChanged(_ sender: NSPopUpButton) {
+        let side = sender.titleOfSelectedItem == "Right" ? "right" : "left"
+        UserDefaults.standard.set(side, forKey: "crystalRailSide")
+        if let appDelegate = NSApp.delegate as? AppDelegate {
+            appDelegate.rail?.repositionRail()
+            appDelegate.layoutAllPanels()
         }
     }
 

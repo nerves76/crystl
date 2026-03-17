@@ -42,7 +42,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
     private var opacityLabelTimer: Timer?
     private weak var glassView: NSVisualEffectView?
     private weak var backingView: NSView?
-    private var setupButton: NSButton?
+    var setupButton: NSButton?
     private weak var statusBar: NSView?
 
     // Starter files — tracks which starter is being edited in settings
