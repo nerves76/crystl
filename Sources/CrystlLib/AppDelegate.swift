@@ -153,10 +153,16 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
         }
         rail = r
 
-        // Hide rail if disabled in settings
+        // Hide rail if disabled in settings, otherwise animate in after window appears
         let railEnabled = UserDefaults.standard.object(forKey: "crystalRailEnabled") as? Bool ?? true
         if !railEnabled {
             r.panel.orderOut(nil)
+        } else {
+            r.panel.alphaValue = 0
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak r] in
+                r?.panel.alphaValue = 1
+                r?.animateOpen()
+            }
         }
 
         // Sync rail opacity with saved slider value
@@ -165,10 +171,16 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
         r.setOpacity(CGFloat(initialOpacity))
 
         // Open any folders queued during launch
+        let hadPendingFolders = !pendingFolders.isEmpty
         for path in pendingFolders {
             _ = openFolder(path)
         }
         pendingFolders.removeAll()
+
+        // Auto-load default formation (if set and no folders were queued)
+        if !hadPendingFolders, let formation = FormationManager.shared.defaultFormation() {
+            loadFormation(formation)
+        }
 
         // Start bridge polling with adaptive backoff
         schedulePollTimer()
@@ -327,26 +339,38 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
             return
         }
 
-        // Only show if Claude integration is enabled in settings
-        let claudeEnabled = UserDefaults.standard.object(forKey: "agentEnabled:claude") as? Bool ?? true
-        guard claudeEnabled else { return }
-
         let tc = terminalController!
-        let panelWidth: CGFloat = 140
+        let panelWidth: CGFloat = 160
         let itemHeight: CGFloat = 24
         let itemGap: CGFloat = 2
-        let modes: [(String, String)] = [("Manual", "manual"), ("Smart", "smart"), ("Auto Approve", "all")]
         let topPad: CGFloat = 14
         let headerLabelH: CGFloat = 14
         let headerGap: CGFloat = 10
         let bottomPad: CGFloat = 14
-        let itemCount = CGFloat(modes.count + 1)  // +1 for Pause All
-        let panelHeight: CGFloat = topPad + headerLabelH + headerGap + itemCount * itemHeight + (itemCount - 1) * itemGap + bottomPad
+        let dividerH: CGFloat = 17  // gap + 1px line + gap
+
+        // ── Formations section height ──
+        let formations = FormationManager.shared.formations
+        let formationItemCount = max(formations.count, 1)  // at least 1 for empty state
+        let saveCurrentH = itemHeight + itemGap
+        let formationsSectionH = headerLabelH + headerGap
+            + CGFloat(formationItemCount) * itemHeight + CGFloat(max(formationItemCount - 1, 0)) * itemGap
+            + itemGap + saveCurrentH
+
+        // ── Claude approval section height ──
+        let claudeEnabled = UserDefaults.standard.object(forKey: "agentEnabled:claude") as? Bool ?? true
+        let modes: [(String, String)] = [("Manual", "manual"), ("Smart", "smart"), ("Auto Approve", "all")]
+        let approvalItemCount = CGFloat(modes.count + 1)  // +1 for Pause All
+        let approvalSectionH = claudeEnabled
+            ? dividerH + headerLabelH + headerGap + approvalItemCount * itemHeight + (approvalItemCount - 1) * itemGap
+            : 0
+
+        let panelHeight = topPad + formationsSectionH + approvalSectionH + bottomPad
 
         // Position adjacent to the rail icon
         let iconScreenFrame = view.window!.convertToScreen(view.convert(view.bounds, to: nil))
         let isRight = UserDefaults.standard.string(forKey: "crystalRailSide") == "right"
-        let x = isRight ? iconScreenFrame.minX - panelWidth - 16 : iconScreenFrame.maxX + 16
+        let x = isRight ? iconScreenFrame.minX - panelWidth - 24 : iconScreenFrame.maxX + 24
         let y = iconScreenFrame.midY - panelHeight / 2
 
         let (panel, glass) = makeGlassPanel(
@@ -355,46 +379,109 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
         )
         panel.contentView = glass
 
-        // Header
-        let header = NSTextField(labelWithString: "CLAUDE APPROVAL")
-        header.font = NSFont.systemFont(ofSize: 10, weight: .bold)
-        header.textColor = NSColor(white: 1.0, alpha: 0.5)
-        header.alignment = .center
-        header.frame = NSRect(x: 0, y: panelHeight - topPad - headerLabelH, width: panelWidth, height: headerLabelH)
-        glass.addSubview(header)
+        // ── Formations section ──
+        var itemY = panelHeight - topPad
 
-        flyoutModeItems.removeAll()
-        var itemY = panelHeight - topPad - headerLabelH - headerGap - itemHeight
-        for (label, mode) in modes {
-            let isActive = mode == tc.currentModeValue
-            let item = FlyoutMenuItem(
+        let formHeader = NSTextField(labelWithString: "FORMATIONS")
+        formHeader.font = NSFont.systemFont(ofSize: 10, weight: .bold)
+        formHeader.textColor = NSColor(white: 1.0, alpha: 0.5)
+        formHeader.alignment = .center
+        formHeader.frame = NSRect(x: 0, y: itemY - headerLabelH, width: panelWidth, height: headerLabelH)
+        glass.addSubview(formHeader)
+        itemY -= headerLabelH + headerGap
+
+        if formations.isEmpty {
+            let empty = NSTextField(labelWithString: "No formations")
+            empty.font = NSFont.systemFont(ofSize: 11, weight: .regular)
+            empty.textColor = NSColor(white: 1.0, alpha: 0.35)
+            empty.alignment = .center
+            empty.frame = NSRect(x: 8, y: itemY - itemHeight, width: panelWidth - 16, height: itemHeight)
+            glass.addSubview(empty)
+            itemY -= itemHeight
+        } else {
+            for formation in formations {
+                itemY -= itemHeight
+                let isDefault = formation.isDefault
+                let title = (isDefault ? "★ " : "") + formation.name
+                let item = FlyoutMenuItem(
+                    frame: NSRect(x: 8, y: itemY, width: panelWidth - 16, height: itemHeight),
+                    title: title, isActive: false
+                )
+                item.onClick = { [weak self] in
+                    self?.closeFlyout()
+                    self?.loadFormation(formation)
+                }
+                glass.addSubview(item)
+                itemY -= itemGap
+            }
+            itemY += itemGap  // undo trailing gap
+        }
+
+        // Save Current button
+        itemY -= itemGap + itemHeight
+        let saveItem = FlyoutMenuItem(
+            frame: NSRect(x: 8, y: itemY, width: panelWidth - 16, height: itemHeight),
+            title: "Save Current...",
+            isActive: false,
+            activeColor: NSColor(calibratedRed: 0.55, green: 0.72, blue: 0.85, alpha: 1.0)
+        )
+        saveItem.label.textColor = NSColor(calibratedRed: 0.55, green: 0.72, blue: 0.85, alpha: 0.8)
+        saveItem.onClick = { [weak self] in
+            self?.closeFlyout()
+            self?.saveCurrentFormation()
+        }
+        glass.addSubview(saveItem)
+
+        // ── Claude approval section ──
+        if claudeEnabled {
+            // Divider
+            itemY -= 8
+            let divider = NSView(frame: NSRect(x: 16, y: itemY, width: panelWidth - 32, height: 1))
+            divider.wantsLayer = true
+            divider.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.15).cgColor
+            glass.addSubview(divider)
+            itemY -= 8
+
+            let header = NSTextField(labelWithString: "CLAUDE APPROVAL")
+            header.font = NSFont.systemFont(ofSize: 10, weight: .bold)
+            header.textColor = NSColor(white: 1.0, alpha: 0.5)
+            header.alignment = .center
+            header.frame = NSRect(x: 0, y: itemY - headerLabelH, width: panelWidth, height: headerLabelH)
+            glass.addSubview(header)
+            itemY -= headerLabelH + headerGap
+
+            flyoutModeItems.removeAll()
+            for (label, mode) in modes {
+                let isActive = mode == tc.currentModeValue
+                itemY -= itemHeight
+                let item = FlyoutMenuItem(
+                    frame: NSRect(x: 8, y: itemY, width: panelWidth - 16, height: itemHeight),
+                    title: label, isActive: isActive
+                )
+                item.onClick = { [weak self] in
+                    self?.terminalController.setMode(mode)
+                    self?.closeFlyout()
+                }
+                glass.addSubview(item)
+                flyoutModeItems[mode] = item
+                itemY -= itemGap
+            }
+
+            // Pause button
+            let isPaused = tc.isPausedValue
+            itemY -= itemHeight
+            let pauseItem = FlyoutMenuItem(
                 frame: NSRect(x: 8, y: itemY, width: panelWidth - 16, height: itemHeight),
-                title: label, isActive: isActive
+                title: isPaused ? "Resume All" : "Pause All",
+                isActive: isPaused,
+                activeColor: .systemOrange
             )
-            item.onClick = { [weak self] in
-                self?.terminalController.setMode(mode)
+            pauseItem.onClick = { [weak self] in
+                self?.terminalController.togglePause()
                 self?.closeFlyout()
             }
-            glass.addSubview(item)
-            flyoutModeItems[mode] = item
-            itemY -= (itemHeight + itemGap)
+            glass.addSubview(pauseItem)
         }
-
-        // Pause button
-        let isPaused = tc.isPausedValue
-        let pauseItem = FlyoutMenuItem(
-            frame: NSRect(x: 8, y: itemY, width: panelWidth - 16, height: itemHeight),
-            title: isPaused ? "Resume All" : "Pause All",
-            isActive: isPaused,
-            activeColor: .systemOrange
-        )
-        pauseItem.onClick = { [weak self] in
-            self?.terminalController.togglePause()
-            self?.approvalFlyout?.close()
-            self?.approvalFlyout = nil
-            self?.flyoutModeItems.removeAll()
-        }
-        glass.addSubview(pauseItem)
 
         panel.orderFrontRegardless()
         approvalFlyout = panel
@@ -408,6 +495,50 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
         flyoutModeItems.removeAll()
         (rail?.iconView as? RailSettingsButton)?.setLocked(false)
         animatePanelOut(panel) {}
+    }
+
+    // MARK: - Formations
+
+    func loadFormation(_ formation: Formation) {
+        guard !formation.projects.isEmpty else { return }
+        let tc = terminalController!
+        let originalCount = tc.projects.count
+
+        for fp in formation.projects {
+            _ = openFolder(fp.path)
+        }
+
+        // Close original projects only if at least one formation project opened
+        if tc.projects.count > originalCount {
+            for i in stride(from: originalCount - 1, through: 0, by: -1) {
+                tc.closeProject(i)
+            }
+        }
+    }
+
+    func saveCurrentFormation() {
+        let alert = NSAlert()
+        alert.messageText = "Save Formation"
+        alert.informativeText = "Name this formation:"
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.placeholderString = "My Formation"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+
+        let formationProjects = terminalController.projects.map { project in
+            FormationProject(
+                path: project.directory,
+                name: project.hasCustomTitle ? project.title : nil
+            )
+        }
+        FormationManager.shared.add(name: name, projects: formationProjects)
     }
 
     /// Animate selection from current mode to a new mode in the flyout (for demo).
@@ -748,10 +879,11 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
         alwaysBtn.bezelStyle = .rounded
         alwaysBtn.isBordered = false
         alwaysBtn.wantsLayer = true
-        alwaysBtn.layer?.backgroundColor = NSColor.systemBlue.withAlphaComponent(0.2).cgColor
+        let brandBlue = NSColor(red: 0.55, green: 0.72, blue: 0.85, alpha: 1.0)
+        alwaysBtn.layer?.backgroundColor = brandBlue.withAlphaComponent(0.15).cgColor
         alwaysBtn.layer?.cornerRadius = 8
         alwaysBtn.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        alwaysBtn.contentTintColor = NSColor.systemBlue
+        alwaysBtn.contentTintColor = brandBlue
         alwaysBtn.target = self
         alwaysBtn.action = #selector(allowAlwaysClicked(_:))
         alwaysBtn.identifier = NSUserInterfaceItemIdentifier(request.id)
@@ -889,6 +1021,27 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
         animatePanelOut(panel) {}
     }
 
+    /// Highlights the Allow All button and individual Allow buttons to simulate a click (for demo).
+    func highlightAllowButtons() {
+        // Allow All bar button
+        if let glass = allowAllPanel?.contentView {
+            for sub in glass.subviews {
+                if let btn = sub as? NSButton {
+                    btn.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.5).cgColor
+                }
+            }
+        }
+        // Individual Allow buttons on approval panels
+        for (_, panel) in panels {
+            guard let glass = panel.contentView else { continue }
+            for sub in glass.subviews {
+                if let btn = sub as? NSButton, btn.title == "Allow" {
+                    btn.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.5).cgColor
+                }
+            }
+        }
+    }
+
     @objc func allowAllClicked() {
         let ids = pendingIds
         for id in ids {
@@ -901,7 +1054,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
         let opacity = opacityFromSlider(sliderVal)
 
         let allPanels: [NSPanel] = Array(panels.values) + Array(notificationPanels.values)
-            + finishedPanels + [allowAllPanel, dismissAllNotificationsPanel].compactMap { $0 }
+            + finishedPanels + [allowAllPanel, dismissAllNotificationsPanel, approvalFlyout].compactMap { $0 }
 
         for panel in allPanels {
             if let glass = panel.contentView as? NSVisualEffectView {
@@ -1019,10 +1172,24 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
             }
             return nil
         }()
-        let headlineText = shardName != nil ? "\(shardName!): \(notif.headline)" : notif.headline
-        let headlineLabel = NSTextField(labelWithString: headlineText)
-        headlineLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
-        headlineLabel.textColor = notifTint.withAlphaComponent(0.8)
+        let headlineLabel: NSTextField
+        if let shard = shardName {
+            let attr = NSMutableAttributedString()
+            attr.append(NSAttributedString(string: "\(shard): ", attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: NSColor.white
+            ]))
+            attr.append(NSAttributedString(string: notif.headline, attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .medium),
+                .foregroundColor: notifTint.withAlphaComponent(0.8)
+            ]))
+            headlineLabel = NSTextField(labelWithString: "")
+            headlineLabel.attributedStringValue = attr
+        } else {
+            headlineLabel = NSTextField(labelWithString: notif.headline)
+            headlineLabel.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+            headlineLabel.textColor = notifTint.withAlphaComponent(0.8)
+        }
         let headlineY = tabName.isEmpty ? cardHeight - 30 : cardHeight - 50
         headlineLabel.frame = NSRect(x: 16, y: headlineY, width: cardWidth - 80, height: 16)
         headlineLabel.lineBreakMode = .byTruncatingTail
@@ -1231,9 +1398,17 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
         titleLabel.frame = NSRect(x: 14, y: cardHeight - 26, width: cardWidth - 28, height: 18)
         glass.addSubview(titleLabel)
 
-        let subLabel = NSTextField(labelWithString: "\(shardName): Process finished")
-        subLabel.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-        subLabel.textColor = NSColor(white: 1.0, alpha: 0.45)
+        let subAttr = NSMutableAttributedString()
+        subAttr.append(NSAttributedString(string: "\(shardName): ", attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: NSColor.white
+        ]))
+        subAttr.append(NSAttributedString(string: "Process finished", attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: .regular),
+            .foregroundColor: NSColor(white: 1.0, alpha: 0.45)
+        ]))
+        let subLabel = NSTextField(labelWithString: "")
+        subLabel.attributedStringValue = subAttr
         subLabel.frame = NSRect(x: 14, y: 10, width: cardWidth - 70, height: 16)
         glass.addSubview(subLabel)
 

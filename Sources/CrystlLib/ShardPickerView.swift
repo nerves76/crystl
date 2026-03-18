@@ -17,19 +17,11 @@ class ShardPickerView: NSView {
     var onNewIsolatedSession: (() -> Void)?
     var onCancel: (() -> Void)?
 
-    private var glass: NSVisualEffectView?
+    private(set) var glass: NSVisualEffectView?
     private var rows: [ShardRow] = []
 
     func setup() {
-        // Glass background
-        let g = NSVisualEffectView(frame: bounds)
-        g.material = .hudWindow
-        g.blendingMode = .behindWindow
-        g.state = .active
-        g.appearance = NSAppearance(named: .darkAqua)
-        g.autoresizingMask = [.width, .height]
-        addSubview(g)
-        glass = g
+        // No separate glass — inherits the window's glass + charcoal backing
 
         layoutContent()
     }

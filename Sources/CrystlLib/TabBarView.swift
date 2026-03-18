@@ -253,7 +253,7 @@ class SessionBarView: NSView, NSTextFieldDelegate {
         // "SHARDS" header label — left of the session pills
         let headerAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 9, weight: .medium),
-            .foregroundColor: NSColor(white: 1.0, alpha: 0.4)
+            .foregroundColor: NSColor(white: 1.0, alpha: 0.6)
         ]
         let header = "SHARDS" as NSString
         let headerSize = header.size(withAttributes: headerAttrs)
@@ -302,7 +302,7 @@ class SessionBarView: NSView, NSTextFieldDelegate {
         // "+" button
         let plusX = leftInset + CGFloat(sessions.count) * (pillWidth + pillSpacing) + 4
         let plusAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 14, weight: .ultraLight),
+            .font: NSFont.systemFont(ofSize: 14, weight: .light),
             .foregroundColor: NSColor.white.withAlphaComponent(0.6)
         ]
         let plusStr = "+" as NSString
@@ -311,7 +311,7 @@ class SessionBarView: NSView, NSTextFieldDelegate {
 
         // Split button — always visible
         let splitBtnX = plusX + plusSize.width + 12
-        let splitAlpha: CGFloat = sessions.count >= 2 ? 0.8 : 0.35
+        let splitAlpha: CGFloat = sessions.count >= 2 ? 0.8 : 0.6
         let splitAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 16, weight: .regular),
             .foregroundColor: NSColor.white.withAlphaComponent(splitAlpha)
@@ -324,7 +324,7 @@ class SessionBarView: NSView, NSTextFieldDelegate {
         let hint = "\u{2325}+ isolated shard" as NSString
         let hintAttrs: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 9, weight: .regular),
-            .foregroundColor: NSColor(white: 1.0, alpha: 0.5)
+            .foregroundColor: NSColor(white: 1.0, alpha: 0.6)
         ]
         let hintSize = hint.size(withAttributes: hintAttrs)
         let hintX = bounds.width - hintSize.width - 14

@@ -228,6 +228,7 @@ Keep source files under **500 lines**. Current violations:
 - **Section headers / field labels**: `white alpha 0.7`
 - **Body text**: `white`
 - **Secondary / dim text**: `white alpha 0.5`
+- **Hint / subtle UI text**: `white alpha 0.6` (shard hints, secondary buttons, small labels)
 - **Empty state text**: `white alpha 0.35`
 - **Field backgrounds**: `white alpha 0.12`
 - **Button tint (secondary)**: `white alpha 0.6`
@@ -239,6 +240,7 @@ Keep source files under **500 lines**. Current violations:
 - Blending: `.behindWindow`
 - State: `.active`
 - Never use solid opaque backgrounds — preserve transparency
+- **All windows/panels must share the same background opacity.** The opacity slider (`windowOpacity` UserDefaults) must affect every surface: terminal window, Crystal Rail, New Gem panel, approval panels, notification panels, shard picker, and any future panels. When a new panel is created, read the saved opacity and apply it. When the slider moves, update all visible surfaces.
 
 ### General Rules
 - Non-flipped NSView coordinates: y increases upward. Label-to-control gap must be >= `controlH - labelH` to prevent overlap.

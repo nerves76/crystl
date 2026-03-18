@@ -108,21 +108,21 @@ class RailTileView: NSView {
         guard let ctx = NSGraphicsContext.current?.cgContext else { return }
 
         // Background — brighter when selected
-        let bgAlpha: CGFloat = tile.isSelected ? 0.25 : 0.1
+        let bgAlpha: CGFloat = tile.isSelected ? 0.25 : 0.15
         ctx.setFillColor(tile.color.withAlphaComponent(bgAlpha).cgColor)
         let bgPath = CGPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), cornerWidth: 10, cornerHeight: 10, transform: nil)
         ctx.addPath(bgPath)
         ctx.fillPath()
 
         // Border
-        let borderAlpha: CGFloat = tile.isSelected ? 0.6 : 0.2
+        let borderAlpha: CGFloat = tile.isSelected ? 0.6 : 0.35
         ctx.setStrokeColor(tile.color.withAlphaComponent(borderAlpha).cgColor)
         ctx.setLineWidth(tile.isSelected ? 1.5 : 0.5)
         ctx.addPath(bgPath)
         ctx.strokePath()
 
         // Icon or initial letter
-        let iconAlpha: CGFloat = tile.isSelected ? 1.0 : 0.7
+        let iconAlpha: CGFloat = tile.isSelected ? 1.0 : 0.95
         if let name = tile.iconName,
            let icon = LucideIcons.render(name: name, size: 20, color: tile.color.withAlphaComponent(iconAlpha)) {
             let iconRect = NSRect(
@@ -251,7 +251,7 @@ class RailTileView: NSView {
         layer?.removeAnimation(forKey: "pendingBorderPulse")
         layer?.removeAnimation(forKey: "pendingScalePulse")
         layer?.borderWidth = tile.isSelected ? 1.5 : 0.5
-        layer?.borderColor = tile.color.withAlphaComponent(tile.isSelected ? 0.6 : 0.2).cgColor
+        layer?.borderColor = tile.color.withAlphaComponent(tile.isSelected ? 0.6 : 0.35).cgColor
         shimmerLayer?.removeFromSuperlayer()
         shimmerLayer = nil
     }
@@ -488,6 +488,13 @@ class PaddedTextField: NSTextField {
 /// A floating glass input panel for creating or editing a project.
 /// Includes name field, icon picker grid, and color picker.
 class NewProjectPanel: NSObject, NSTextFieldDelegate {
+    /// The underlying panel (for opacity sync).
+    var nsPanel: NSPanel? { panel }
+
+    /// Highlights the submit button to simulate a click (for demo).
+    func highlightSubmitButton() {
+        submitButton?.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.6).cgColor
+    }
     private var panel: NSPanel?
     private var nameField: NSTextField?
     private var pathField: NSTextField?
@@ -577,8 +584,17 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
         glass.appearance = NSAppearance(named: .darkAqua)
         glass.maskImage = roundedMaskImage(size: NSSize(width: panelWidth, height: panelHeight), radius: 12)
         glass.wantsLayer = true
+        glass.layer?.cornerRadius = 12
         glass.layer?.borderWidth = 0.5
         glass.layer?.borderColor = NSColor(white: 1.0, alpha: 0.3).cgColor
+
+        // Charcoal overlay inside glass (above blur, below content)
+        let backing = CharcoalBackingView(frame: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight))
+        backing.wantsLayer = true
+        backing.layer?.backgroundColor = darkCharcoalColor.cgColor
+        backing.autoresizingMask = [.width, .height]
+        backing.alphaValue = 0
+        glass.addSubview(backing)
 
         // ── Layout (top-down, non-flipped coordinates: y0 counts down from top) ──
         let sidePad: CGFloat = 16
@@ -838,6 +854,15 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
         createBtn.action = #selector(createClicked)
         glass.addSubview(createBtn)
         submitButton = createBtn
+
+        // Apply current opacity to match the rest of the UI
+        let savedOpacity = UserDefaults.standard.double(forKey: "windowOpacity")
+        let sliderVal = savedOpacity > 0.01 ? savedOpacity : 0.5
+        let opacity = opacityFromSlider(CGFloat(sliderVal))
+        glass.alphaValue = opacity.glassAlpha
+        if let b = findCharcoalBacking(in: glass) {
+            b.alphaValue = opacity.darkAlpha
+        }
 
         p.contentView = glass
         p.orderFrontRegardless()
@@ -1204,6 +1229,7 @@ class CrystalRailController {
         glass.appearance = NSAppearance(named: .darkAqua)
         glass.maskImage = railMaskImage(size: NSSize(width: railWidth, height: initialHeight))
         glass.wantsLayer = true
+        glass.layer?.cornerRadius = 12
         glass.layer?.borderWidth = 0.5
         glass.layer?.borderColor = NSColor(white: 1.0, alpha: 0.3).cgColor
 
@@ -1281,6 +1307,14 @@ class CrystalRailController {
         glassView?.alphaValue = opacity.glassAlpha
         if let glass = glassView, let backing = findCharcoalBacking(in: glass) {
             backing.alphaValue = opacity.darkAlpha
+        }
+        // Sync New Gem panel opacity
+        if let gemPanel = newProjectPanel.nsPanel,
+           let glass = gemPanel.contentView as? NSVisualEffectView {
+            glass.alphaValue = opacity.glassAlpha
+            if let backing = findCharcoalBacking(in: glass) {
+                backing.alphaValue = opacity.darkAlpha
+            }
         }
     }
 

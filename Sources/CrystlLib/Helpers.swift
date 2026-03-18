@@ -139,7 +139,7 @@ func formatTimeAgo(_ timestamp: Double) -> String {
 /// on hover and a brighter background when active (selected).
 class FlyoutMenuItem: NSView {
     var onClick: (() -> Void)?
-    private let label: NSTextField
+    let label: NSTextField
     private var isActive: Bool
     private var isHovered: Bool = false
     private var trackingArea: NSTrackingArea?
@@ -299,6 +299,7 @@ func makeGlassPanel(
     glass.appearance = NSAppearance(named: .darkAqua)
     glass.maskImage = roundedMaskImage(size: NSSize(width: width, height: height), radius: cornerRadius)
     glass.wantsLayer = true
+    glass.layer?.cornerRadius = cornerRadius
     glass.layer?.borderWidth = 0.5
     glass.layer?.borderColor = NSColor(white: 1.0, alpha: borderAlpha).cgColor
 

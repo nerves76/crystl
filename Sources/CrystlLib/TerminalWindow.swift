@@ -171,7 +171,12 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
             settingsBtn.image = img
             settingsBtn.imageScaling = .scaleProportionallyDown
         }
-        settingsBtn.alphaValue = 0.85
+        settingsBtn.alphaValue = 1.0
+        settingsBtn.restAlpha = 1.0
+        settingsBtn.hoverAlpha = 1.0
+        settingsBtn.glowColor = NSColor(calibratedRed: 0.6, green: 0.85, blue: 1.0, alpha: 1.0)
+        settingsBtn.glowRadius = 12
+        settingsBtn.glowOpacity = 0.8
         settingsBtn.hoverText = "Settings"
         self.settingsButton = settingsBtn
         container.addSubview(settingsBtn)
@@ -420,11 +425,13 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         return color
     }
 
-    func addProject(cwd: String = NSHomeDirectory()) {
-        let lm = LicenseManager.shared
-        if lm.tier == .free && projects.count >= LicenseManager.freeGemLimit {
-            showUpgradePrompt("Unlock unlimited gems with a Crystl Pro license.")
-            return
+    func addProject(cwd: String = NSHomeDirectory(), skipLicenseCheck: Bool = false) {
+        if !skipLicenseCheck {
+            let lm = LicenseManager.shared
+            if lm.tier == .free && projects.count >= LicenseManager.freeGemLimit {
+                showUpgradePrompt("Unlock unlimited gems with a Crystl Pro license.")
+                return
+            }
         }
         let project = ProjectTab(directory: cwd, color: nextColor())
         if cwd == NSHomeDirectory() { project.isUnconfigured = true }
@@ -939,6 +946,10 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         applyOpacity(val)
         UserDefaults.standard.set(val, forKey: "windowOpacity")
         onOpacityChanged?(CGFloat(val))
+
+        // Update percentage label
+        let pct = Int(round(val * 100))
+        opacityLabel?.stringValue = "\(pct)%"
     }
 
     // Accessors for rail menu

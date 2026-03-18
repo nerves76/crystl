@@ -18,6 +18,7 @@ import Cocoa
 /// Pages available in the settings sidebar.
 enum SettingsPage: String, CaseIterable {
     case general = "General"
+    case formations = "Formations"
     case claude = "Claude"
     case codex = "Codex"
     case mcpServers = "MCP Servers"
@@ -224,6 +225,7 @@ extension TerminalWindowController {
     private func buildPage(_ page: SettingsPage, width: CGFloat, minHeight: CGFloat = 0) -> NSView {
         switch page {
         case .general:    return buildGeneralPage(width: width, minH: minHeight)
+        case .formations: return buildFormationsPage(width: width, minH: minHeight)
         case .claude:     return buildClaudePage(width: width, minH: minHeight)
         case .codex:      return buildCodexPage(width: width, minH: minHeight)
         case .mcpServers: return buildMCPPage(width: width, minH: minHeight)
@@ -446,16 +448,6 @@ class DemoRunner {
                 session.terminalView.isHidden = true
                 tc.contentArea.addSubview(session.terminalView)
 
-                // Add a second shard to api-server for split view demo
-                if proj.name == "wordpress-site" {
-                    if let shard2 = project.addSession(frame: tc.contentArea.bounds).session {
-                        shard2.terminalView.processDelegate = tc
-                        tc.configureTerminalAppearance(shard2.terminalView, sessionId: shard2.id)
-                        shard2.terminalView.frame = tc.contentArea.bounds
-                        shard2.terminalView.isHidden = true
-                        tc.contentArea.addSubview(shard2.terminalView)
-                    }
-                }
 
                 tc.onTabAdded?(project)
             }
@@ -467,11 +459,16 @@ class DemoRunner {
             // Make window visible and animate in
             win.alphaValue = 1
             win.makeKeyAndOrderFront(nil)
-            appDelegate.rail?.panel.alphaValue = 1
-            appDelegate.rail?.animateOpen()
+            appDelegate.rail?.panel.alphaValue = 0
 
             if let container = win.contentView {
                 tc.animateWindowOpen(container: container)
+            }
+
+            // Rail slides in after window opens
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                appDelegate.rail?.panel.alphaValue = 1
+                appDelegate.rail?.animateOpen()
             }
 
             // 6. Start shells immediately — autorun begins typing "claude"
@@ -502,69 +499,62 @@ class DemoRunner {
                 appDelegate.closeFlyout()
             }
 
-            // 8. Webapp events while viewing webapp (~14s from shell start)
+            // 8. Webapp events while viewing webapp (~14s from shell start, when question appears)
             DispatchQueue.global().asyncAfter(deadline: .now() + 14) {
 
-                // Phase 1: webapp approvals (matches the tab we're viewing)
-                sendApprovalEvents()
+                // Phase 1a: webapp approval (matches the tab we're viewing)
+                sendWebappApproval()
 
-                // Phase 2: Allow All after 3s
-                Thread.sleep(forTimeInterval: 3)
+                // Force poll to pick it up immediately
+                DispatchQueue.main.async { appDelegate.poll() }
+                Thread.sleep(forTimeInterval: 2)
+
+                // Phase 1b: wordpress-site approval (different gem, tile pulses)
+                sendWordpressApproval()
+                DispatchQueue.main.async { appDelegate.poll() }
+
+                // Phase 2: Allow All after 4s (with button press effect)
+                Thread.sleep(forTimeInterval: 4)
+                DispatchQueue.main.async {
+                    appDelegate.highlightAllowButtons()
+                }
+                Thread.sleep(forTimeInterval: 0.4)
                 DispatchQueue.main.async {
                     appDelegate.allowAllClicked()
                 }
 
-                // Phase 3: webapp notification
-                Thread.sleep(forTimeInterval: 1)
-                sendWebappNotification()
+                // Phase 3: pause before moving to split view
+                Thread.sleep(forTimeInterval: 3)
 
-                // Phase 4: dismiss notification after 6s
-                Thread.sleep(forTimeInterval: 6)
-                DispatchQueue.main.async {
-                    appDelegate.highlightNotificationDismissButtons()
-                }
-                Thread.sleep(forTimeInterval: 0.4)
-                DispatchQueue.main.async {
-                    appDelegate.dismissAllNotificationsClicked()
-                }
-
-                // Phase 5: switch to api-server + split view
+                // Phase 4: split view on webapp (left pane stays as-is)
                 Thread.sleep(forTimeInterval: 1)
                 DispatchQueue.main.async {
-                    let apiIdx = tc.projects.firstIndex(where: { $0.directory.hasSuffix("wordpress-site") }) ?? 1
-                    tc.selectProject(apiIdx)
-                    tc.updateTabBar()
+                    guard let project = tc.selectedProject, let sc = tc.splitController else { return }
+                    sc.split(project: project)
 
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                        guard apiIdx < tc.projects.count else { return }
-                        let project = tc.projects[apiIdx]
-                        if let sc = tc.splitController {
-                            sc.split(project: project)
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                if project.sessions.count > 1 {
-                                    sc.assignSession(1, toPane: 1, project: project)
-                                    tc.updateSessionBar()
-                                }
-                            }
+                }
+
+                // Phase 5b: animate opacity darker after split opens
+                Thread.sleep(forTimeInterval: 1.5)
+                DispatchQueue.main.async {
+                    // Smoothly slide opacity from 0.5 to 1.0 (fully right)
+                    let steps = 20
+                    let from = 0.5
+                    let to = 1.0
+                    for i in 0...steps {
+                        let t = Double(i) / Double(steps)
+                        let val = from + (to - from) * t
+                        DispatchQueue.main.asyncAfter(deadline: .now() + t * 1.0) {
+                            tc.setOpacity(val)
                         }
                     }
                 }
 
-                // Phase 6: api-server approvals (viewing api-server now)
-                Thread.sleep(forTimeInterval: 2)
-                sendApiServerApprovalEvents()
-
-                // Phase 7: Allow All after 3s
-                Thread.sleep(forTimeInterval: 3)
-                DispatchQueue.main.async {
-                    appDelegate.allowAllClicked()
-                }
-
-                // Phase 8: api-server + infra notifications
-                Thread.sleep(forTimeInterval: 1)
+                // Phase 6: infra notification (different project)
+                Thread.sleep(forTimeInterval: 2.5)
                 sendNotificationEvents()
 
-                // Phase 9: dismiss notifications after 6s
+                // Phase 7: dismiss notification after 6s
                 Thread.sleep(forTimeInterval: 6)
                 DispatchQueue.main.async {
                     appDelegate.highlightNotificationDismissButtons()
@@ -589,14 +579,41 @@ class DemoRunner {
                 }
                 let typeTime = Double(demoName.count) * 0.06 + 0.4
                 Thread.sleep(forTimeInterval: typeTime)
+
+                // Scroll the panel down to reveal color/icon grids
+                DispatchQueue.main.async {
+                    if let panel = appDelegate.rail?.newProjectPanel.nsPanel,
+                       let glass = panel.contentView {
+                        // Find scroll view and scroll down
+                        for sub in glass.subviews {
+                            if let scroll = sub as? NSScrollView {
+                                let clipView = scroll.contentView
+                                let maxScroll = max(0, (scroll.documentView?.bounds.height ?? 0) - clipView.bounds.height)
+                                NSAnimationContext.runAnimationGroup { ctx in
+                                    ctx.duration = 0.5
+                                    clipView.animator().setBoundsOrigin(NSPoint(x: 0, y: maxScroll))
+                                }
+                            }
+                        }
+                    }
+                }
+                Thread.sleep(forTimeInterval: 1.0)
+
+                // Select color
                 DispatchQueue.main.async {
                     appDelegate.rail?.newProjectPanel.selectColor(3)
                 }
-                Thread.sleep(forTimeInterval: 0.6)
+                Thread.sleep(forTimeInterval: 1.0)
+
+                // Select icon
                 DispatchQueue.main.async {
                     appDelegate.rail?.newProjectPanel.selectIcon("sparkles")
                 }
-                Thread.sleep(forTimeInterval: 1.5)
+                Thread.sleep(forTimeInterval: 2.0)
+                DispatchQueue.main.async {
+                    appDelegate.rail?.newProjectPanel.highlightSubmitButton()
+                }
+                Thread.sleep(forTimeInterval: 0.4)
                 DispatchQueue.main.async {
                     appDelegate.rail?.newProjectPanel.dismiss()
                 }
@@ -606,7 +623,7 @@ class DemoRunner {
                        let project = tc.selectedProject {
                         sc.unsplit(project: project)
                     }
-                    tc.addProject(cwd: demoDir + "/terminal-project")
+                    tc.addProject(cwd: demoDir + "/terminal-project", skipLicenseCheck: true)
                 }
 
                 Thread.sleep(forTimeInterval: 18)
@@ -680,59 +697,57 @@ class DemoRunner {
         try? dashboardCode.write(toFile: webapp + "/src/components/Dashboard.tsx", atomically: true, encoding: .utf8)
 
         // Autorun script for webapp
-        // Timeline: t=0 clear, t=0.5 type "claude", t=2 banner, t=5 type prompt,
-        //           t=8.5 thinking animation, t=13 explanation, t=13.5 "Waiting for approval..."
         let autorun = """
         clear
-        sleep 0.5
+        sleep 1
+        O="\\033[38;5;208m"; W="\\033[1;37m"; D="\\033[38;5;245m"; R="\\033[0m"
         echo -e "\\033[0;36m\u{276F}\\033[0m \\c"
         for c in c l a u d e; do echo -n "$c"; sleep 0.08; done
         echo ""
-        sleep 1
+        sleep 0.3
         echo ""
-        O="\\033[38;5;208m"; W="\\033[1;37m"; D="\\033[38;5;245m"; R="\\033[0m"; G="\\033[0;37m"
-        echo -e "${O}\u{256D}\u{2500}\u{2500}\u{2500} Claude Code v2.1.75 \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256E}${R}"
-        echo -e "${O}\u{2502}${R}                                             ${O}\u{2502}${R} ${W}Tips for getting started${R}                 ${O}\u{2502}${R}"
-        echo -e "${O}\u{2502}${R}             ${W}Welcome back Chris!${R}             ${O}\u{2502}${R} Run ${W}/init${R} to create a CLAUDE.md file     ${O}\u{2502}${R}"
-        echo -e "${O}\u{2502}${R}                                             ${O}\u{2502}${R} ${D}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}${R}  ${O}\u{2502}${R}"
-        echo -e "${O}\u{2502}${R}                   ${O}\u{258C}\u{259B}\u{2588}\u{2588}\u{2588}\u{259C}\u{258C}${R}                   ${O}\u{2502}${R} ${W}Recent activity${R}                          ${O}\u{2502}${R}"
-        echo -e "${O}\u{2502}${R}                  ${O}\u{259D}\u{259C}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{259B}\u{2598}${R}                  ${O}\u{2502}${R} ${D}No recent activity${R}                       ${O}\u{2502}${R}"
-        echo -e "${O}\u{2502}${R}                    ${O}\u{2598}\u{2598} \u{259D}\u{259D}${R}                    ${O}\u{2502}${R}                                          ${O}\u{2502}${R}"
-        echo -e "${O}\u{2502}${R}                                             ${O}\u{2502}${R}                                          ${O}\u{2502}${R}"
-        echo -e "${O}\u{2502}${R}   ${D}Opus 4.6 (1M context) \u{00B7} Claude Max \u{00B7}${R}      ${O}\u{2502}${R}                                          ${O}\u{2502}${R}"
-        echo -e "${O}\u{2502}${R}        ${G}/tmp/crystl-demo/webapp${R}              ${O}\u{2502}${R}                                          ${O}\u{2502}${R}"
-        echo -e "${O}\u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256F}${R}"
+        echo -e "${O}\u{256D}\u{2500}\u{2500}\u{2500} Claude Code v2.1.75 \u{2500}\u{2500}\u{2500}\u{256E}${R}"
+        echo -e "${O}\u{2502}${R}          ${O}\u{258C}\u{259B}\u{2588}\u{2588}\u{2588}\u{259C}\u{258C}${R}          ${O}\u{2502}${R}"
+        echo -e "${O}\u{2502}${R}         ${O}\u{259D}\u{259C}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{259B}\u{2598}${R}         ${O}\u{2502}${R}"
+        echo -e "${O}\u{2502}${R}           ${O}\u{2598}\u{2598} \u{259D}\u{259D}${R}           ${O}\u{2502}${R}"
+        echo -e "${O}\u{2502}${R}   ${D}Opus 4.6 \u{00B7} Claude Max${R}   ${O}\u{2502}${R}"
+        echo -e "${O}\u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256F}${R}"
         echo ""
-        echo -e "  ${D}\u{2191} Opus now defaults to 1M context \u{00B7} 5x more room, same pricing${R}"
-        echo ""
-        sleep 3
+        sleep 4
         echo -ne "\\033[1;35m\u{276F}\\033[0m "
-        prompt="Add error handling with a retry button to the Dashboard component"
-        for (( i=0; i<${#prompt}; i++ )); do
-            echo -n "${prompt:$i:1}"
+        msg="If the save button doesn't work on the dashboard can we add an error message?"
+        for (( i=0; i<${#msg}; i++ )); do
+            echo -n "${msg:$i:1}"
             sleep 0.025
         done
         echo ""
         sleep 1.5
         echo ""
-        echo -ne "${O}\u{25CF} Reading...${R}"
-        sleep 1.0
-        echo -ne "\\r\\033[2K${O}\u{25CF} Analyzing...${R}"
-        sleep 1.2
+        echo -ne "${O}\u{25CF} Analyzing...${R}"
+        sleep 1.5
         echo -ne "\\r\\033[2K${O}\u{25CF} Crystalizing...${R}"
         sleep 1.5
         echo -ne "\\r\\033[2K${O}\u{25CF} Fermenting...${R}"
         sleep 1.0
         echo -ne "\\r\\033[2K"
         echo ""
-        echo -e "I'll add error handling with a retry mechanism. This requires:"
+        echo -e "I'll add error handling with a retry mechanism. This requires"
+        echo -e "editing ${W}Dashboard.tsx${R}, creating an ${W}ErrorCard${R} component,"
+        echo -e "and running the test suite."
         echo ""
-        echo -e "  1. Adding error state and refetch logic to the hook"
-        echo -e "  2. Creating an \\033[1mErrorCard\\033[0m component with a retry button"
-        echo -e "  3. Running the test suite to verify"
+        echo -e "Should I also add error logging to track retry attempts?"
+        echo -e "\\033[0;36m\u{276F}\\033[0m 1. Yes"
+        echo -e "  2. Yes, and don't ask again"
+        echo -e "  3. No"
+        sleep 5
+        echo -ne "${O}\u{25CF} Dissecting...${R}"
+        sleep 1.5
+        echo -ne "\\r\\033[2K${O}\u{25CF} Crystalizing...${R}"
+        sleep 1.5
+        echo -ne "\\r\\033[2K"
         echo ""
-        sleep 0.5
-        echo -e "\\033[0;33m\u{23F3} Waiting for approval...\\033[0m"
+        echo -e "Done. Error handling with retry button added to Dashboard."
+        sleep 30
         """
         try? autorun.write(toFile: webapp + "/.crystl/autorun.sh", atomically: true, encoding: .utf8)
 
@@ -741,73 +756,7 @@ class DemoRunner {
         try? fm.createDirectory(atPath: apiServer + "/.crystl", withIntermediateDirectories: true)
         try? "{ \"color\": \"#F7768E\", \"icon\": \"zap\" }".write(toFile: apiServer + "/.crystl/project.json", atomically: true, encoding: .utf8)
 
-        // Timeline: t=0 clear, t=3 thinking starts, t=11.5 explanation + question prompt.
-        // We switch to this tab at ~13s, so the user sees the question prompt on screen.
-        let apiAutorun = """
-        clear
-        sleep 0.5
-        O="\\033[38;5;208m"; W="\\033[1;37m"; D="\\033[38;5;245m"; R="\\033[0m"
-        echo -e "\\033[0;36m\u{276F}\\033[0m claude"
-        sleep 0.8
-        echo ""
-        echo -e "${O}\u{256D}\u{2500}\u{2500}\u{2500} Claude Code v2.1.75 \u{2500}\u{2500}\u{2500}\u{256E}${R}"
-        echo -e "${O}\u{2502}${R}  ${D}Opus 4.6 \u{00B7} Claude Max${R}  ${O}\u{2502}${R}"
-        echo -e "${O}\u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256F}${R}"
-        echo ""
-        echo -e "\\033[1;35m\u{276F}\\033[0m Can you update the hero section on homepage to be more conversion focused?"
-        echo ""
-        echo -ne "${O}\u{25CF} Reading...${R}"
-        sleep 1.2
-        echo -ne "\\r\\033[2K${O}\u{25CF} Analyzing...${R}"
-        sleep 1.2
-        echo -ne "\\r\\033[2K${O}\u{25CF} Drafting...${R}"
-        sleep 1.5
-        echo -ne "\\r\\033[2K${O}\u{25CF} Crystalizing...${R}"
-        sleep 1.5
-        echo -ne "\\r\\033[2K${O}\u{25CF} Formatting...${R}"
-        sleep 1.5
-        echo -ne "\\r\\033[2K${O}\u{25CF} Validating...${R}"
-        sleep 1.5
-        echo -ne "\\r\\033[2K"
-        echo ""
-        echo -e "I'll update the hero section content and publish it via"
-        echo -e "${W}wp-json/wp/v2/pages${R} using the REST API."
-        echo ""
-        echo -e "${W}Should I also update the meta description for SEO?${R}"
-        echo ""
-        echo -e "\\033[0;36m\u{276F}\\033[0m ${W}1.${R} ${W}Yes${R}"
-        echo -e "     ${D}Update meta description too${R}"
-        echo -e "  ${W}2.${R} ${W}Yes, and don't ask again${R}"
-        echo -e "     ${D}Always update SEO fields with content changes${R}"
-        echo -e "  ${W}3.${R} ${W}No${R}"
-        echo -e "     ${D}Just update the hero content${R}"
-        echo -e "  ${W}4.${R} Type something."
-        echo ""
-        echo -e "${D}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}${R}"
-        echo ""
-        echo -e "  ${W}5.${R} Chat about this"
-        echo ""
-        echo -e "${D}Enter to select \u{00B7} \u{2191}/\u{2193} to navigate \u{00B7} Esc to cancel${R}"
-        sleep 7
-        echo ""
-        echo -e "  ${W}\u{2713} Yes${R}"
-        echo ""
-        echo -ne "${O}\u{25CF} Implementing...${R}"
-        sleep 1.2
-        echo -ne "\\r\\033[2K${O}\u{25CF} Dilly-dallying...${R}"
-        sleep 1.0
-        echo -ne "\\r\\033[2K${O}\u{25CF} Deciphering...${R}"
-        sleep 1.2
-        echo -ne "\\r\\033[2K${O}\u{25CF} Compiling...${R}"
-        sleep 1.5
-        echo -ne "\\r\\033[2K${O}\u{25CF} Crystalizing...${R}"
-        sleep 1.5
-        echo -ne "\\r\\033[2K${O}\u{25CF} Percolating...${R}"
-        sleep 1.5
-        echo -ne "\\r\\033[2K${O}\u{25CF} Transmuting...${R}"
-        sleep 30
-        """
-        try? apiAutorun.write(toFile: apiServer + "/.crystl/autorun.sh", atomically: true, encoding: .utf8)
+        // No autorun for wordpress-site — left pane stays as-is when split opens
 
         // Other projects — just config + icon
         for proj in projects where proj.name != "webapp" && proj.name != "wordpress-site" {
@@ -832,14 +781,17 @@ class DemoRunner {
         sleep 0.8
         echo ""
         echo -e "${O}\u{256D}\u{2500}\u{2500}\u{2500} Claude Code v2.1.75 \u{2500}\u{2500}\u{2500}\u{256E}${R}"
-        echo -e "${O}\u{2502}${R}  ${D}Opus 4.6 \u{00B7} Claude Max${R}  ${O}\u{2502}${R}"
-        echo -e "${O}\u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256F}${R}"
+        echo -e "${O}\u{2502}${R}          ${O}\u{258C}\u{259B}\u{2588}\u{2588}\u{2588}\u{259C}\u{258C}${R}          ${O}\u{2502}${R}"
+        echo -e "${O}\u{2502}${R}         ${O}\u{259D}\u{259C}\u{2588}\u{2588}\u{2588}\u{2588}\u{2588}\u{259B}\u{2598}${R}         ${O}\u{2502}${R}"
+        echo -e "${O}\u{2502}${R}           ${O}\u{2598}\u{2598} \u{259D}\u{259D}${R}           ${O}\u{2502}${R}"
+        echo -e "${O}\u{2502}${R}   ${D}Opus 4.6 \u{00B7} Claude Max${R}   ${O}\u{2502}${R}"
+        echo -e "${O}\u{2570}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{256F}${R}"
         echo ""
         sleep 0.5
         echo -ne "\\033[1;35m\u{276F}\\033[0m "
-        prompt="What features does Crystl offer?"
-        for (( i=0; i<${#prompt}; i++ )); do
-            echo -n "${prompt:$i:1}"
+        msg="What features does Crystl offer?"
+        for (( i=0; i<${#msg}; i++ )); do
+            echo -n "${msg:$i:1}"
             sleep 0.025
         done
         echo ""
@@ -853,26 +805,35 @@ class DemoRunner {
         sleep 0.8
         echo -ne "\\r\\033[2K"
         echo ""
-        echo -e "Crystl is a glass-aesthetic terminal manager designed for Claude Code:"
+        echo -e "Crystl is a terminal built for agentic multi-tasking:"
         echo ""
         sleep 0.3
         echo -e "  ${W}\u{25C6} Gems${R} \u{2500} Tabbed projects with custom icons and colors"
+        echo ""
         sleep 0.15
         echo -e "  ${W}\u{25C6} Shards${R} \u{2500} Multiple terminal sessions within each project"
+        echo ""
         sleep 0.15
         echo -e "  ${W}\u{25C6} Isolated Shards${R} \u{2500} Git worktree-backed shards for parallel agents"
+        echo ""
         sleep 0.15
-        echo -e "  ${W}\u{25C6} Crystal Rail${R} \u{2500} Screen-edge dock for quick project switching"
+        echo -e "  ${W}\u{25C6} Crystl Rail${R} \u{2500} Screen-edge dock for keeping tabs on agentic work"
+        echo ""
         sleep 0.15
         echo -e "  ${W}\u{25C6} Approval Panels${R} \u{2500} Floating glass panels for permissions"
+        echo ""
         sleep 0.15
         echo -e "  ${W}\u{25C6} Smart Approvals${R} \u{2500} Manual, Smart, or Auto approval modes"
+        echo ""
         sleep 0.15
         echo -e "  ${W}\u{25C6} Notifications${R} \u{2500} Alerts when Claude finishes or needs attention"
+        echo ""
         sleep 0.15
         echo -e "  ${W}\u{25C6} Split View${R} \u{2500} Side-by-side terminal comparison"
+        echo ""
         sleep 0.15
         echo -e "  ${W}\u{25C6} API Keys${R} \u{2500} Secure keychain storage, auto-injected into sessions"
+        echo ""
         sleep 0.15
         echo -e "  ${W}\u{25C6} Click-to-Open${R} \u{2500} Click file paths to open in your editor"
         echo ""
@@ -947,19 +908,15 @@ class DemoRunner {
         URLSession.shared.dataTask(with: req).resume()
     }
 
-    static func sendApprovalEvents() {
+    static func sendWebappApproval() {
         postBridge(path: "/hook?type=PermissionRequest", json: """
         {"tool_name":"Edit","tool_input":{"file_path":"src/components/Dashboard.tsx","old_string":"if (loading) return <Skeleton rows={4} />;","new_string":"if (loading) return <Skeleton rows={4} />;\\n  if (error) return <ErrorCard message={error} onRetry={refetch} />;"},"cwd":"/tmp/crystl-demo/webapp","session_id":"demo-webapp-001","permission_mode":"default"}
         """)
-        Thread.sleep(forTimeInterval: 1)
+    }
 
+    static func sendWordpressApproval() {
         postBridge(path: "/hook?type=PermissionRequest", json: """
-        {"tool_name":"Write","tool_input":{"file_path":"src/components/ErrorCard.tsx","content":"export function ErrorCard({ message, onRetry }) { ... }"},"cwd":"/tmp/crystl-demo/webapp","session_id":"demo-webapp-001","permission_mode":"default"}
-        """)
-        Thread.sleep(forTimeInterval: 1)
-
-        postBridge(path: "/hook?type=PermissionRequest", json: """
-        {"tool_name":"Bash","tool_input":{"command":"npm test -- --run src/components/Dashboard.test.tsx"},"cwd":"/tmp/crystl-demo/webapp","session_id":"demo-webapp-001","permission_mode":"default"}
+        {"tool_name":"Bash","tool_input":{"command":"curl -X POST https://mysite.com/wp-json/wp/v2/pages/2 -d @homepage.json"},"cwd":"/tmp/crystl-demo/wordpress-site","session_id":"demo-wp-002","permission_mode":"default"}
         """)
     }
 
@@ -981,11 +938,6 @@ class DemoRunner {
     }
 
     static func sendNotificationEvents() {
-        postBridge(path: "/hook?type=Stop", json: """
-        {"session_id":"demo-wp-002","cwd":"/tmp/crystl-demo/wordpress-site","last_assistant_message":"Homepage hero updated and published. Meta description refreshed for SEO.","stop_hook_active":true}
-        """)
-        Thread.sleep(forTimeInterval: 0.8)
-
         postBridge(path: "/hook?type=Stop", json: """
         {"session_id":"demo-infra-003","cwd":"/tmp/crystl-demo/infra","last_assistant_message":"Terraform plan ready. 3 resources to add, 1 to modify, 0 to destroy.","stop_hook_active":true}
         """)

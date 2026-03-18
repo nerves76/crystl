@@ -10,20 +10,27 @@ import SwiftTerm
 
 // ── Split Pane View ──
 
-/// Container for one side of a split. Draws a focus border when active.
+/// Container for one side of a split. Insets content from the divider edge.
 class SplitPaneView: NSView {
     var focusBorderColor: NSColor = .white
     var isFocused: Bool = false { didSet { needsDisplay = true } }
     var onClicked: (() -> Void)?
+    /// Which side this pane is on — determines which edge gets padding.
+    var isLeftPane: Bool = true
+    private let dividerPadding: CGFloat = 4
+
+    override func layout() {
+        super.layout()
+        for sub in subviews {
+            let inset = isLeftPane
+                ? NSRect(x: 0, y: 0, width: bounds.width - dividerPadding, height: bounds.height)
+                : NSRect(x: dividerPadding, y: 0, width: bounds.width - dividerPadding, height: bounds.height)
+            sub.frame = inset
+        }
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        if isFocused {
-            focusBorderColor.withAlphaComponent(0.4).setStroke()
-            let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 4, yRadius: 4)
-            path.lineWidth = 1.5
-            path.stroke()
-        }
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -52,6 +59,12 @@ class SplitViewController: NSObject, NSSplitViewDelegate {
     private var leftPane: SplitPaneView?
     private var rightPane: SplitPaneView?
     private var shardPicker: ShardPickerView?
+
+    /// The shard picker's glass background (for opacity sync).
+    var shardPickerGlass: NSVisualEffectView? { shardPicker?.glass }
+
+    /// The right pane view (for adding backing views).
+    var rightPaneView: SplitPaneView? { rightPane }
 
     // Callbacks
     var onFocusChanged: (() -> Void)?
@@ -83,10 +96,11 @@ class SplitViewController: NSObject, NSSplitViewDelegate {
         let color = project.sessions[currentIdx].crystalColor
         left.focusBorderColor = color
         left.isFocused = false
+        left.isLeftPane = true
 
         currentView.removeFromSuperview()
         currentView.frame = left.bounds
-        currentView.autoresizingMask = [.width, .height]
+        currentView.autoresizingMask = []
         currentView.isHidden = false
         left.addSubview(currentView)
 
@@ -99,9 +113,10 @@ class SplitViewController: NSObject, NSSplitViewDelegate {
         right.autoresizingMask = [.width, .height]
         right.isFocused = true
         right.focusBorderColor = .white
+        right.isLeftPane = false
 
         let picker = ShardPickerView(frame: right.bounds)
-        picker.autoresizingMask = [.width, .height]
+        picker.autoresizingMask = []
         picker.sessions = project.sessions
         picker.visibleSessionIndices = Set([currentIdx])
         picker.projectColor = project.color
@@ -228,7 +243,7 @@ class SplitViewController: NSObject, NSSplitViewDelegate {
         let session = project.sessions[sessionIndex]
         session.terminalView.removeFromSuperview()
         session.terminalView.frame = pane.bounds
-        session.terminalView.autoresizingMask = [.width, .height]
+        session.terminalView.autoresizingMask = []
         session.terminalView.isHidden = false
         pane.addSubview(session.terminalView)
 
@@ -286,6 +301,7 @@ class SplitViewController: NSObject, NSSplitViewDelegate {
                                                 height: contentArea.bounds.height))
         left.autoresizingMask = [.width, .height]
         left.isFocused = project.panes[0].isFocused
+        left.isLeftPane = true
         left.onClicked = { [weak self] in self?.focusPane(0, project: project) }
 
         let right = SplitPaneView(frame: NSRect(x: 0, y: 0,
@@ -293,6 +309,7 @@ class SplitViewController: NSObject, NSSplitViewDelegate {
                                                  height: contentArea.bounds.height))
         right.autoresizingMask = [.width, .height]
         right.isFocused = project.panes[1].isFocused
+        right.isLeftPane = false
         right.onClicked = { [weak self] in self?.focusPane(1, project: project) }
 
         for (i, pane) in [(0, left), (1, right)] as [(Int, SplitPaneView)] {
@@ -300,7 +317,7 @@ class SplitViewController: NSObject, NSSplitViewDelegate {
                 let session = project.sessions[sessionIdx]
                 session.terminalView.removeFromSuperview()
                 session.terminalView.frame = pane.bounds
-                session.terminalView.autoresizingMask = [.width, .height]
+                session.terminalView.autoresizingMask = []
                 session.terminalView.isHidden = false
                 pane.addSubview(session.terminalView)
                 pane.focusBorderColor = session.crystalColor

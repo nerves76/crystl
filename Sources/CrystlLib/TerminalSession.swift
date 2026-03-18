@@ -133,8 +133,11 @@ class InsetFrostView: NSView {
 /// NSButton subclass that glows on hover via layer shadow animation.
 class GlowButton: NSButton {
     private var trackingArea: NSTrackingArea?
-    private let restAlpha: CGFloat = 0.75
-    private let hoverAlpha: CGFloat = 1.0
+    var restAlpha: CGFloat = 0.75
+    var hoverAlpha: CGFloat = 1.0
+    var glowColor: NSColor = .white
+    var glowRadius: CGFloat = 8
+    var glowOpacity: Float = 0.6
 
     /// White text label shown below the button on hover.
     var hoverText: String?
@@ -158,14 +161,14 @@ class GlowButton: NSButton {
             animator().alphaValue = hoverAlpha
         }
         wantsLayer = true
-        layer?.shadowColor = NSColor.white.cgColor
+        layer?.shadowColor = glowColor.cgColor
         layer?.shadowOffset = .zero
-        layer?.shadowRadius = 8
+        layer?.shadowRadius = glowRadius
         let anim = CABasicAnimation(keyPath: "shadowOpacity")
         anim.fromValue = 0
-        anim.toValue = 0.6
+        anim.toValue = glowOpacity
         anim.duration = 0.15
-        layer?.shadowOpacity = 0.6
+        layer?.shadowOpacity = glowOpacity
         layer?.add(anim, forKey: "glowIn")
 
         if let text = hoverText, let parent = superview {
@@ -187,7 +190,7 @@ class GlowButton: NSButton {
             animator().alphaValue = restAlpha
         }
         let anim = CABasicAnimation(keyPath: "shadowOpacity")
-        anim.fromValue = 0.6
+        anim.fromValue = glowOpacity
         anim.toValue = 0
         anim.duration = 0.25
         layer?.shadowOpacity = 0

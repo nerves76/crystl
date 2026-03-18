@@ -134,9 +134,11 @@ class ShellIntegration {
 
     # Auto-run script if .crystl/autorun.sh exists (used by demo scripts)
     if [[ -f "$PWD/.crystl/autorun.sh" ]]; then
-        local __crystl_autorun="$PWD/.crystl/autorun.sh"
-        (sleep 0.1 && rm -f "$__crystl_autorun") &
+        local __crystl_autorun=$(mktemp)
+        cp "$PWD/.crystl/autorun.sh" "$__crystl_autorun"
+        rm -f "$PWD/.crystl/autorun.sh"
         source "$__crystl_autorun"
+        rm -f "$__crystl_autorun"
     fi
 
     """
