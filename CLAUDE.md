@@ -9,6 +9,7 @@ cd /Users/chris/Nextcloud/crystl
 swift build -c release          # compile
 bash build.sh                   # compile + install to ~/Applications + register services + restart bridge
 killall Crystl; open ~/Applications/Crystl.app  # restart after install
+CRYSTL_DEV=1 open ~/Applications/Crystl.app     # run with dev mode (bypasses license checks)
 ```
 
 ## Architecture

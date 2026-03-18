@@ -70,6 +70,7 @@ enum Feature {
     case splitView
     case apiKeys
     case mcpConfig
+    case formations
 }
 
 // MARK: - License Manager
@@ -89,6 +90,7 @@ class LicenseManager {
 
     /// Current tier derived from state.
     var tier: LicenseTier {
+        if ProcessInfo.processInfo.environment["CRYSTL_DEV"] != nil { return .pro }
         if case .valid = currentState { return .pro }
         return .free
     }

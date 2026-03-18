@@ -112,6 +112,10 @@ extension TerminalWindowController {
     // MARK: - Formation Action Handlers
 
     @objc func formationSetDefault(_ sender: NSButton) {
+        if LicenseManager.shared.tier == .free {
+            showUpgradePrompt("Formations require a Guild membership.")
+            return
+        }
         let formations = FormationManager.shared.formations
         guard sender.tag < formations.count else { return }
         let formation = formations[sender.tag]
@@ -124,6 +128,10 @@ extension TerminalWindowController {
     }
 
     @objc func formationLoad(_ sender: NSButton) {
+        if LicenseManager.shared.tier == .free {
+            showUpgradePrompt("Formations require a Guild membership.")
+            return
+        }
         let formations = FormationManager.shared.formations
         guard sender.tag < formations.count else { return }
         let formation = formations[sender.tag]
@@ -175,6 +183,10 @@ extension TerminalWindowController {
     }
 
     @objc func formationSaveCurrent() {
+        if LicenseManager.shared.tier == .free {
+            showUpgradePrompt("Formations require a Guild membership.")
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "Save Formation"
         alert.informativeText = "Name this formation:"

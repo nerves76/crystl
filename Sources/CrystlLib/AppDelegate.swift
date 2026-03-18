@@ -177,8 +177,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
         }
         pendingFolders.removeAll()
 
-        // Auto-load default formation (if set and no folders were queued)
-        if !hadPendingFolders, let formation = FormationManager.shared.defaultFormation() {
+        // Auto-load default formation (if licensed, set, and no folders were queued)
+        if !hadPendingFolders,
+           LicenseManager.shared.tier == .pro,
+           let formation = FormationManager.shared.defaultFormation() {
             loadFormation(formation)
         }
 
@@ -501,6 +503,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
 
     func loadFormation(_ formation: Formation) {
         guard !formation.projects.isEmpty else { return }
+        if LicenseManager.shared.tier == .free {
+            terminalController.showUpgradePrompt("Formations require a Guild membership.")
+            return
+        }
         let tc = terminalController!
         let originalCount = tc.projects.count
 
@@ -517,6 +523,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
     }
 
     func saveCurrentFormation() {
+        if LicenseManager.shared.tier == .free {
+            terminalController.showUpgradePrompt("Formations require a Guild membership.")
+            return
+        }
         let alert = NSAlert()
         alert.messageText = "Save Formation"
         alert.informativeText = "Name this formation:"
