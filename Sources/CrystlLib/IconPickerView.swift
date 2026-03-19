@@ -217,6 +217,16 @@ class IconGridView: NSView {
         selectedIcon = name
         onIconSelected?(name)
         needsDisplay = true
+
+        // Scroll to make the selected icon visible
+        if let idx = filteredIcons.firstIndex(of: name) {
+            let col = idx % cols
+            let row = idx / cols
+            let x = CGFloat(col) * (cellSize + cellSpacing)
+            let y = frame.height - CGFloat(row + 1) * (cellSize + cellSpacing)
+            let cellRect = NSRect(x: x, y: y, width: cellSize, height: cellSize)
+            scrollToVisible(cellRect)
+        }
     }
 }
 

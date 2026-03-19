@@ -44,6 +44,7 @@ extension TerminalWindowController {
         }
 
         container.layer?.cornerRadius = 0
+        container.layer?.backgroundColor = NSColor(white: 0.08, alpha: 1.0).cgColor
 
         let transition = CATransition()
         transition.duration = 0.6
@@ -61,6 +62,7 @@ extension TerminalWindowController {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             container.layer?.cornerRadius = 16
+            container.layer?.backgroundColor = nil
         }
     }
 
@@ -69,6 +71,7 @@ extension TerminalWindowController {
         isShowingSettings = false
 
         container.layer?.cornerRadius = 0
+        container.layer?.backgroundColor = NSColor(white: 0.08, alpha: 1.0).cgColor
 
         let transition = CATransition()
         transition.duration = 0.6
@@ -91,6 +94,7 @@ extension TerminalWindowController {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
             container.layer?.cornerRadius = 16
+            container.layer?.backgroundColor = nil
         }
     }
 
@@ -115,6 +119,19 @@ extension TerminalWindowController {
         glass.autoresizingMask = [.width, .height]
         glass.appearance = NSAppearance(named: .darkAqua)
         view.addSubview(glass)
+
+        // Charcoal overlay — syncs with opacity slider
+        let savedOpacity = UserDefaults.standard.double(forKey: "windowOpacity")
+        let sliderVal = savedOpacity > 0.01 ? savedOpacity : 0.5
+        let opacity = opacityFromSlider(CGFloat(sliderVal))
+        glass.alphaValue = opacity.glassAlpha
+
+        let backing = CharcoalBackingView(frame: bounds)
+        backing.wantsLayer = true
+        backing.layer?.backgroundColor = darkCharcoalColor.cgColor
+        backing.autoresizingMask = [.width, .height]
+        backing.alphaValue = opacity.darkAlpha
+        view.addSubview(backing)
 
         // ── Layout constants ──
         let sidebarW: CGFloat = 200
@@ -535,7 +552,7 @@ class DemoRunner {
                 }
 
                 // Phase 5b: animate opacity darker after split opens
-                Thread.sleep(forTimeInterval: 1.5)
+                Thread.sleep(forTimeInterval: 0.8)
                 DispatchQueue.main.async {
                     // Smoothly slide opacity from 0.5 to 1.0 (fully right)
                     let steps = 20
@@ -544,14 +561,14 @@ class DemoRunner {
                     for i in 0...steps {
                         let t = Double(i) / Double(steps)
                         let val = from + (to - from) * t
-                        DispatchQueue.main.asyncAfter(deadline: .now() + t * 1.0) {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + t * 0.6) {
                             tc.setOpacity(val)
                         }
                     }
                 }
 
                 // Phase 6: infra notification (different project)
-                Thread.sleep(forTimeInterval: 2.5)
+                Thread.sleep(forTimeInterval: 0.5)
                 sendNotificationEvents()
 
                 // Phase 7: dismiss notification after 6s
@@ -725,7 +742,7 @@ class DemoRunner {
         echo ""
         echo -ne "${O}\u{25CF} Analyzing...${R}"
         sleep 1.5
-        echo -ne "\\r\\033[2K${O}\u{25CF} Crystalizing...${R}"
+        echo -ne "\\r\\033[2K${O}\u{25CF} Synthesizing...${R}"
         sleep 1.5
         echo -ne "\\r\\033[2K${O}\u{25CF} Fermenting...${R}"
         sleep 1.0
@@ -742,7 +759,7 @@ class DemoRunner {
         sleep 5
         echo -ne "${O}\u{25CF} Dissecting...${R}"
         sleep 1.5
-        echo -ne "\\r\\033[2K${O}\u{25CF} Crystalizing...${R}"
+        echo -ne "\\r\\033[2K${O}\u{25CF} Refining...${R}"
         sleep 1.5
         echo -ne "\\r\\033[2K"
         echo ""
@@ -789,7 +806,7 @@ class DemoRunner {
         echo ""
         sleep 0.5
         echo -ne "\\033[1;35m\u{276F}\\033[0m "
-        msg="What features does Crystl offer?"
+        msg="What features does Crystl have?"
         for (( i=0; i<${#msg}; i++ )); do
             echo -n "${msg:$i:1}"
             sleep 0.025
@@ -833,6 +850,9 @@ class DemoRunner {
         echo ""
         sleep 0.15
         echo -e "  ${W}\u{25C6} API Keys${R} \u{2500} Secure keychain storage, auto-injected into sessions"
+        echo ""
+        sleep 0.15
+        echo -e "  ${W}\u{25C6} Formations${R} \u{2500} Save and restore project layouts instantly"
         echo ""
         sleep 0.15
         echo -e "  ${W}\u{25C6} Click-to-Open${R} \u{2500} Click file paths to open in your editor"

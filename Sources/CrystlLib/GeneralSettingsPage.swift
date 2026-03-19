@@ -90,10 +90,34 @@ extension TerminalWindowController {
         docView.addSubview(notifToggle)
         y -= 38
 
-        // Demo button
-        _ = addButton("▶  Run Demo", to: docView, x: x, y: &y, width: w, action: #selector(runDemo))
-
         finalizeDocView(docView, startY: startY, currentY: y, width: width, minHeight: minH)
+
+        // Demo button — bottom right, outside normal flow
+        let brandBlue = NSColor(calibratedRed: 0.55, green: 0.72, blue: 0.85, alpha: 1.0)
+        let btnW: CGFloat = 120
+        let btnH: CGFloat = 28
+        let demoBtn = GlowButton(frame: NSRect(
+            x: docView.frame.width - btnW - 32,
+            y: 16,
+            width: btnW, height: btnH
+        ))
+        demoBtn.title = "▶  Run Demo"
+        demoBtn.bezelStyle = .inline
+        demoBtn.isBordered = false
+        demoBtn.wantsLayer = true
+        demoBtn.layer?.backgroundColor = brandBlue.withAlphaComponent(0.2).cgColor
+        demoBtn.layer?.cornerRadius = 8
+        demoBtn.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        demoBtn.contentTintColor = brandBlue
+        demoBtn.target = self
+        demoBtn.action = #selector(runDemo)
+        demoBtn.restAlpha = 1.0
+        demoBtn.hoverAlpha = 1.0
+        demoBtn.glowColor = brandBlue
+        demoBtn.glowRadius = 10
+        demoBtn.glowOpacity = 0.5
+        docView.addSubview(demoBtn)
+
         return docView
     }
 
@@ -166,6 +190,8 @@ extension TerminalWindowController {
     @objc func runDemo() {
         guard let appDelegate = NSApp.delegate as? AppDelegate else { return }
         flipToTerminal()
-        DemoRunner.run(terminalController: self, appDelegate: appDelegate)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            DemoRunner.run(terminalController: self, appDelegate: appDelegate)
+        }
     }
 }

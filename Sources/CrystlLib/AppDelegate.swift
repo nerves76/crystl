@@ -332,6 +332,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
     }
 
     var approvalFlyout: NSPanel?
+    var formationsPickerPanel: NSPanel?
+    var flyoutClickMonitor: Any?
     var flyoutModeItems: [String: FlyoutMenuItem] = [:]
 
     func showRailSettingsMenu(from view: NSView) {
@@ -349,15 +351,12 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
         let headerLabelH: CGFloat = 14
         let headerGap: CGFloat = 10
         let bottomPad: CGFloat = 14
-        let dividerH: CGFloat = 17  // gap + 1px line + gap
+        let dividerH: CGFloat = 25  // gap + 1px line + gap
 
-        // ── Formations section height ──
+        // ── Formations section height (always 2 items: Open + Save) ──
         let formations = FormationManager.shared.formations
-        let formationItemCount = max(formations.count, 1)  // at least 1 for empty state
-        let saveCurrentH = itemHeight + itemGap
         let formationsSectionH = headerLabelH + headerGap
-            + CGFloat(formationItemCount) * itemHeight + CGFloat(max(formationItemCount - 1, 0)) * itemGap
-            + itemGap + saveCurrentH
+            + 2 * itemHeight + itemGap
 
         // ── Claude approval section height ──
         let claudeEnabled = UserDefaults.standard.object(forKey: "agentEnabled:claude") as? Bool ?? true
@@ -386,48 +385,40 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
 
         let formHeader = NSTextField(labelWithString: "FORMATIONS")
         formHeader.font = NSFont.systemFont(ofSize: 10, weight: .bold)
-        formHeader.textColor = NSColor(white: 1.0, alpha: 0.5)
+        formHeader.textColor = NSColor(white: 1.0, alpha: 0.8)
         formHeader.alignment = .center
         formHeader.frame = NSRect(x: 0, y: itemY - headerLabelH, width: panelWidth, height: headerLabelH)
         glass.addSubview(formHeader)
         itemY -= headerLabelH + headerGap
 
+        // Open — shows submenu of saved formations
+        itemY -= itemHeight
+        let openItem = FlyoutMenuItem(
+            frame: NSRect(x: 8, y: itemY, width: panelWidth - 16, height: itemHeight),
+            title: formations.isEmpty ? "Open" : "Open ›",
+            isActive: false
+        )
         if formations.isEmpty {
-            let empty = NSTextField(labelWithString: "No formations")
-            empty.font = NSFont.systemFont(ofSize: 11, weight: .regular)
-            empty.textColor = NSColor(white: 1.0, alpha: 0.35)
-            empty.alignment = .center
-            empty.frame = NSRect(x: 8, y: itemY - itemHeight, width: panelWidth - 16, height: itemHeight)
-            glass.addSubview(empty)
-            itemY -= itemHeight
+            openItem.label.textColor = NSColor(white: 1.0, alpha: 0.35)
         } else {
-            for formation in formations {
-                itemY -= itemHeight
-                let isDefault = formation.isDefault
-                let title = (isDefault ? "★ " : "") + formation.name
-                let item = FlyoutMenuItem(
-                    frame: NSRect(x: 8, y: itemY, width: panelWidth - 16, height: itemHeight),
-                    title: title, isActive: false
-                )
-                item.onClick = { [weak self] in
-                    self?.closeFlyout()
-                    self?.loadFormation(formation)
+            openItem.onClick = { [weak self] in
+                if self?.formationsPickerPanel != nil {
+                    self?.closeFormationsPicker()
+                } else {
+                    self?.showFormationsPicker()
                 }
-                glass.addSubview(item)
-                itemY -= itemGap
             }
-            itemY += itemGap  // undo trailing gap
         }
+        glass.addSubview(openItem)
+        itemY -= itemGap
 
-        // Save Current button
-        itemY -= itemGap + itemHeight
+        // Save
+        itemY -= itemHeight
         let saveItem = FlyoutMenuItem(
             frame: NSRect(x: 8, y: itemY, width: panelWidth - 16, height: itemHeight),
-            title: "Save Current...",
-            isActive: false,
-            activeColor: NSColor(calibratedRed: 0.55, green: 0.72, blue: 0.85, alpha: 1.0)
+            title: "Save",
+            isActive: false
         )
-        saveItem.label.textColor = NSColor(calibratedRed: 0.55, green: 0.72, blue: 0.85, alpha: 0.8)
         saveItem.onClick = { [weak self] in
             self?.closeFlyout()
             self?.saveCurrentFormation()
@@ -437,16 +428,16 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
         // ── Claude approval section ──
         if claudeEnabled {
             // Divider
-            itemY -= 8
+            itemY -= 12
             let divider = NSView(frame: NSRect(x: 16, y: itemY, width: panelWidth - 32, height: 1))
             divider.wantsLayer = true
             divider.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.15).cgColor
             glass.addSubview(divider)
-            itemY -= 8
+            itemY -= 12
 
             let header = NSTextField(labelWithString: "CLAUDE APPROVAL")
             header.font = NSFont.systemFont(ofSize: 10, weight: .bold)
-            header.textColor = NSColor(white: 1.0, alpha: 0.5)
+            header.textColor = NSColor(white: 1.0, alpha: 0.8)
             header.alignment = .center
             header.frame = NSRect(x: 0, y: itemY - headerLabelH, width: panelWidth, height: headerLabelH)
             glass.addSubview(header)
@@ -489,9 +480,22 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
         approvalFlyout = panel
         (rail?.iconView as? RailSettingsButton)?.setLocked(true)
         animateLiquidCrystal(panel: panel, cornerRadius: 12, borderAlpha: 0.3)
+
+        // Dismiss on click outside
+        flyoutClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            self?.closeFlyout()
+        }
     }
 
     func closeFlyout() {
+        if let picker = formationsPickerPanel {
+            formationsPickerPanel = nil
+            animatePanelOut(picker) {}
+        }
+        if let monitor = flyoutClickMonitor {
+            NSEvent.removeMonitor(monitor)
+            flyoutClickMonitor = nil
+        }
         guard let panel = approvalFlyout else { return }
         approvalFlyout = nil
         flyoutModeItems.removeAll()
@@ -549,6 +553,57 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
             )
         }
         FormationManager.shared.add(name: name, projects: formationProjects)
+    }
+
+    func closeFormationsPicker() {
+        guard let picker = formationsPickerPanel else { return }
+        formationsPickerPanel = nil
+        animatePanelOut(picker) {}
+    }
+
+    func showFormationsPicker() {
+        guard let flyout = approvalFlyout else { return }
+        let formations = FormationManager.shared.formations
+        guard !formations.isEmpty else { return }
+
+        let pickerWidth: CGFloat = 180
+        let itemHeight: CGFloat = 28
+        let itemGap: CGFloat = 2
+        let pad: CGFloat = 8
+        let pickerHeight = CGFloat(formations.count) * itemHeight + CGFloat(max(formations.count - 1, 0)) * itemGap + pad * 2
+
+        let flyoutFrame = flyout.frame
+        let isRight = UserDefaults.standard.string(forKey: "crystalRailSide") == "right"
+        let x = isRight ? flyoutFrame.minX - pickerWidth - 8 : flyoutFrame.maxX + 8
+        let y = flyoutFrame.maxY - pickerHeight - 20
+
+        let (panel, glass) = makeGlassPanel(
+            width: pickerWidth, height: pickerHeight, x: x, y: y,
+            cornerRadius: 10, glassAlpha: currentOpacity, borderAlpha: 0.2
+        )
+
+        var itemY = pickerHeight - pad
+        for formation in formations {
+            itemY -= itemHeight
+            let isDefault = formation.isDefault
+            let title = (isDefault ? "★ " : "") + formation.name
+            let item = FlyoutMenuItem(
+                frame: NSRect(x: 6, y: itemY, width: pickerWidth - 12, height: itemHeight),
+                title: title, isActive: false
+            )
+            item.onClick = { [weak self, weak panel] in
+                panel?.orderOut(nil)
+                self?.closeFlyout()
+                self?.loadFormation(formation)
+            }
+            glass.addSubview(item)
+            itemY -= itemGap
+        }
+
+        panel.contentView = glass
+        panel.orderFrontRegardless()
+        formationsPickerPanel = panel
+        animateLiquidCrystal(panel: panel, cornerRadius: 10, borderAlpha: 0.2)
     }
 
     /// Animate selection from current mode to a new mode in the flyout (for demo).
