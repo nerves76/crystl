@@ -347,7 +347,7 @@ class ProjectTab {
     var hasCustomTitle: Bool = false
     var sessions: [TerminalSession] = []
     var color: NSColor
-    var iconName: String? = "diamond"
+    var iconName: String? = "gem"
     var isUnconfigured: Bool = false
 
     // Split state

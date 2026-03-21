@@ -90,6 +90,31 @@ extension TerminalWindowController {
         docView.addSubview(notifToggle)
         y -= 38
 
+        // ── Sounds ──
+        addSectionHeader("SOUNDS", to: docView, x: x, y: &y, width: w)
+
+        let soundOptions = ["None"]
+            + CrystlSounds.customSoundNames
+            + ["─"]  // separator
+            + ["Basso", "Blow", "Bottle", "Frog", "Funk", "Glass",
+               "Hero", "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink"]
+
+        addFieldLabel("APPROVAL SOUND", to: docView, x: x, y: &y, width: w)
+        let approvalSound = UserDefaults.standard.string(forKey: "approvalSound") ?? "None"
+        let approvalPopup = addPopup(soundOptions, selected: approvalSound,
+                                      to: docView, x: x, y: &y, width: w,
+                                      action: #selector(approvalSoundChanged(_:)))
+        approvalPopup.identifier = NSUserInterfaceItemIdentifier("approvalSoundPicker")
+
+        addFieldLabel("NOTIFICATION SOUND", to: docView, x: x, y: &y, width: w)
+        let notifSound = UserDefaults.standard.string(forKey: "notificationSound") ?? "None"
+        let notifPopup = addPopup(soundOptions, selected: notifSound,
+                                   to: docView, x: x, y: &y, width: w,
+                                   action: #selector(notificationSoundChanged(_:)))
+        notifPopup.identifier = NSUserInterfaceItemIdentifier("notificationSoundPicker")
+
+        y -= 12
+
         finalizeDocView(docView, startY: startY, currentY: y, width: width, minHeight: minH)
 
         // Demo button — bottom right, outside normal flow
@@ -159,6 +184,20 @@ extension TerminalWindowController {
             appDelegate.rail?.repositionRail()
             appDelegate.layoutAllPanels()
         }
+    }
+
+    @objc func approvalSoundChanged(_ sender: NSPopUpButton) {
+        let sound = sender.titleOfSelectedItem ?? "None"
+        guard sound != "─" else { return }
+        UserDefaults.standard.set(sound, forKey: "approvalSound")
+        CrystlSounds.shared.play(sound)
+    }
+
+    @objc func notificationSoundChanged(_ sender: NSPopUpButton) {
+        let sound = sender.titleOfSelectedItem ?? "None"
+        guard sound != "─" else { return }
+        UserDefaults.standard.set(sound, forKey: "notificationSound")
+        CrystlSounds.shared.play(sound)
     }
 
     @objc func browseProjectsDir(_ sender: NSButton) {

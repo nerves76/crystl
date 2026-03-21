@@ -112,15 +112,57 @@ class ColorGridView: NSView {
 // MARK: - Icon Grid View
 
 /// Scrollable grid of Lucide icons. Supports search filtering and selection.
+// Icon categories for organized browsing
+private let iconCategories: [(name: String, icons: [String])] = [
+    ("Shapes", ["gem", "diamond", "diamond-plus", "diamond-minus", "diamond-percent",
+                "hexagon", "octagon", "pentagon", "pyramid", "triangle", "square",
+                "crown", "sparkle", "sparkles", "star", "skull", "disc"]),
+    ("Dev", ["code", "terminal", "git-branch", "git-commit", "git-merge", "git-pull-request",
+             "cpu", "database", "hard-drive", "globe", "cloud", "rocket", "command",
+             "hash", "layers", "package", "box", "bug", "wrench", "bolt"]),
+    ("Tools", ["settings", "key", "lock", "unlock", "search", "filter", "edit",
+               "scissors", "pen-tool", "compass", "crosshair", "crop", "sliders",
+               "trash", "clipboard", "save", "download", "upload", "share",
+               "wand", "target", "lightbulb"]),
+    ("Media", ["image", "camera", "film", "video", "music", "mic", "headphones",
+               "speaker", "volume-2", "play", "pause", "skip-forward", "shuffle",
+               "repeat", "radio", "tv", "monitor", "cast", "airplay"]),
+    ("Comms", ["mail", "send", "message-circle", "message-square", "phone", "at-sign",
+               "bell", "inbox", "paperclip", "link", "external-link", "wifi", "bluetooth"]),
+    ("Interface", ["home", "bookmark", "heart", "flag", "tag", "award", "gift",
+                   "shopping-bag", "briefcase", "calendar", "clock", "watch",
+                   "map", "map-pin", "navigation", "eye", "info", "help-circle",
+                   "alert-circle", "alert-triangle", "check", "check-circle",
+                   "plus", "power", "menu", "sidebar", "grid", "layout", "list",
+                   "maximize", "chevron-up", "chevron-down", "chevron-left", "chevron-right"]),
+    ("Fantasy", ["swords", "scroll", "axe", "skull", "crown", "flame", "wand",
+                  "shield", "gem", "diamond", "sparkles"]),
+    ("Nature", ["mountain", "tree-pine", "leaf", "feather", "fish", "bird",
+                "cat", "dog", "rabbit", "snail", "squirrel", "turtle",
+                "sun", "moon", "droplet"]),
+    ("General", ["zap", "anchor", "lamp", "palette", "coffee", "umbrella",
+                 "book", "file", "file-text", "folder", "printer", "truck",
+                 "user", "users", "activity", "smartphone",
+                 "refresh-cw", "trending-up"]),
+]
+
 class IconGridView: NSView {
     var selectedIcon: String?
     var selectedColor: NSColor = presetColors[0]
     var onIconSelected: ((String) -> Void)?
-    private let iconSize: CGFloat = 28
-    private let cellSize: CGFloat = 36
-    private let cellSpacing: CGFloat = 4
+    private let iconSize: CGFloat = 20
+    private let cellSize: CGFloat = 28
+    private let cellSpacing: CGFloat = 3
     private var containerWidth: CGFloat = 288
     private var filteredIcons: [String] = []
+    private var tabButtons: [NSButton] = []
+    private let tabHeight: CGFloat = 22
+    var selectedCategory: Int = 0 {
+        didSet {
+            refilter()
+            updateTabStyles()
+        }
+    }
 
     var filterText: String = "" {
         didSet { refilter() }
@@ -129,18 +171,53 @@ class IconGridView: NSView {
     init(frame: NSRect, containerWidth: CGFloat) {
         self.containerWidth = containerWidth
         super.init(frame: frame)
+        buildCategoryTabs()
         refilter()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
+    private func buildCategoryTabs() {
+        var tabX: CGFloat = 0
+        for (i, cat) in iconCategories.enumerated() {
+            let btn = NSButton(frame: .zero)
+            btn.title = cat.name
+            btn.bezelStyle = .rounded
+            btn.isBordered = false
+            btn.font = NSFont.systemFont(ofSize: 9, weight: i == 0 ? .bold : .medium)
+            btn.contentTintColor = i == 0 ? .white : NSColor(white: 1.0, alpha: 0.5)
+            btn.sizeToFit()
+            btn.frame = NSRect(x: tabX, y: 0, width: btn.frame.width + 6, height: tabHeight)
+            btn.tag = i
+            btn.target = self
+            btn.action = #selector(categoryClicked(_:))
+            addSubview(btn)
+            tabButtons.append(btn)
+            tabX += btn.frame.width + 2
+        }
+    }
+
+    @objc private func categoryClicked(_ sender: NSButton) {
+        selectedCategory = sender.tag
+    }
+
+    private func updateTabStyles() {
+        for btn in tabButtons {
+            let isActive = btn.tag == selectedCategory
+            btn.font = NSFont.systemFont(ofSize: 9, weight: isActive ? .bold : .medium)
+            btn.contentTintColor = isActive ? .white : NSColor(white: 1.0, alpha: 0.5)
+        }
+    }
+
     private func refilter() {
-        let allIcons = LucideIcons.allNames
-        if filterText.isEmpty {
-            filteredIcons = allIcons
-        } else {
+        if !filterText.isEmpty {
             let query = filterText.lowercased()
-            filteredIcons = allIcons.filter { $0.contains(query) }
+            filteredIcons = LucideIcons.allNames.filter { $0.contains(query) }
+        } else if selectedCategory < iconCategories.count {
+            let allNames = Set(LucideIcons.allNames)
+            filteredIcons = iconCategories[selectedCategory].icons.filter { allNames.contains($0) }
+        } else {
+            filteredIcons = LucideIcons.allNames
         }
         resizeToFit()
         needsDisplay = true
@@ -152,17 +229,24 @@ class IconGridView: NSView {
 
     private func resizeToFit() {
         let rows = (filteredIcons.count + cols - 1) / cols
-        let height = CGFloat(rows) * (cellSize + cellSpacing)
-        frame = NSRect(x: frame.origin.x, y: frame.origin.y, width: containerWidth, height: max(height, 40))
+        let iconsHeight = CGFloat(rows) * (cellSize + cellSpacing)
+        let totalHeight = tabHeight + 6 + iconsHeight
+        frame = NSRect(x: frame.origin.x, y: frame.origin.y, width: containerWidth, height: max(totalHeight, 60))
+
+        // Reposition tabs at top of view
+        for btn in tabButtons {
+            btn.frame.origin.y = frame.height - tabHeight
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {
         let c = cols
+        let iconsTop = frame.height - tabHeight - 6
         for (i, iconName) in filteredIcons.enumerated() {
             let col = i % c
             let row = i / c
             let x = CGFloat(col) * (cellSize + cellSpacing)
-            let y = frame.height - CGFloat(row + 1) * (cellSize + cellSpacing)
+            let y = iconsTop - CGFloat(row + 1) * (cellSize + cellSpacing)
             let cellRect = NSRect(x: x, y: y, width: cellSize, height: cellSize)
 
             guard cellRect.intersects(dirtyRect) else { continue }
@@ -191,11 +275,12 @@ class IconGridView: NSView {
     override func mouseDown(with event: NSEvent) {
         let loc = convert(event.locationInWindow, from: nil)
         let c = cols
+        let iconsTop = frame.height - tabHeight - 6
         for (i, iconName) in filteredIcons.enumerated() {
             let col = i % c
             let row = i / c
             let x = CGFloat(col) * (cellSize + cellSpacing)
-            let y = frame.height - CGFloat(row + 1) * (cellSize + cellSpacing)
+            let y = iconsTop - CGFloat(row + 1) * (cellSize + cellSpacing)
             let cellRect = NSRect(x: x, y: y, width: cellSize, height: cellSize)
 
             if cellRect.contains(loc) {
@@ -327,7 +412,7 @@ class IconPickerPanel: NSObject {
         glass.addSubview(searchField)
         y0 -= 26
 
-        // Icon grid (scrollable)
+        // Icon grid (scrollable, includes category tabs)
         let gridHeight = y0 - 48
         let scrollView = NSScrollView(frame: NSRect(x: 16, y: 48, width: panelWidth - 32, height: gridHeight))
         scrollView.hasVerticalScroller = true
@@ -371,6 +456,7 @@ class IconPickerPanel: NSObject {
     @objc private func searchChanged(_ sender: NSTextField) {
         iconGrid?.filterText = sender.stringValue
     }
+
 
     @objc private func saveClicked() {
         let iconName = iconGrid?.selectedIcon

@@ -171,7 +171,7 @@ class LicenseManager {
     }
 
     /// Free tier gem limit.
-    static let freeGemLimit = 2
+    static let freeGemLimit = 5
     /// Free tier shard limit per gem.
     static let freeShardLimit = 3
 

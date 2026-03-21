@@ -974,6 +974,11 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
         panels[request.id] = panel
         panelCwds[request.id] = request.cwd ?? ""
 
+        // Play approval sound
+        if let soundName = UserDefaults.standard.string(forKey: "approvalSound") {
+            CrystlSounds.shared.play(soundName)
+        }
+
         animateLiquidCrystal(panel: panel, cornerRadius: 12, borderAlpha: 0.12)
     }
 
@@ -1307,6 +1312,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
 
         notificationPanels[notif.id] = panel
 
+        // Play notification sound
+        if let soundName = UserDefaults.standard.string(forKey: "notificationSound") {
+            CrystlSounds.shared.play(soundName)
+        }
     }
 
     func dismissNotificationPanel(id: String) {
