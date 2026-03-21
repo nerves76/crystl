@@ -8,6 +8,8 @@ import Cocoa
 
 class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
     private var overlay: NSView?
+    private var floatingPanel: NSPanel?
+    private var clickMonitor: Any?
     private var searchField: NSTextField?
     private var tableView: NSTableView?
     private var scrollView: NSScrollView?
@@ -29,11 +31,11 @@ class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NST
     }
 
     /// Show the picker as an overlay anchored to the top-left of the parent view.
-    /// Layout (top to bottom): search field, directory list, path label.
+    /// Layout (top to bottom): search field, path label, directory list.
     func show(in parent: NSView, projectsDir: String) {
         dismiss()
 
-        basePath = projectsDir
+        basePath = NSHomeDirectory()
         currentPath = projectsDir
 
         let fm = FileManager.default
@@ -43,8 +45,8 @@ class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NST
 
         loadEntries()
 
-        let w: CGFloat = min(parent.bounds.width - 24, 460)
-        let h: CGFloat = min(parent.bounds.height - 20, 360)
+        let w: CGFloat = min(parent.bounds.width - 24, 240)
+        let h: CGFloat = min(parent.bounds.height - 20, 380)
         let x: CGFloat = 0
         let y: CGFloat = -20
 
@@ -54,39 +56,61 @@ class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NST
         container.layer?.cornerRadius = 12
         container.layer?.masksToBounds = true
 
-        // Glass background
+        // Glass background — respects opacity slider
+        let savedOpacity = UserDefaults.standard.double(forKey: "windowOpacity")
+        let sliderVal = savedOpacity > 0.01 ? savedOpacity : 0.5
+        let opacity = opacityFromSlider(CGFloat(sliderVal))
+
         let glass = NSVisualEffectView(frame: container.bounds)
         glass.material = .hudWindow
-        glass.alphaValue = 0.92
+        glass.alphaValue = opacity.glassAlpha
         glass.blendingMode = .behindWindow
         glass.state = .active
         glass.autoresizingMask = [.width, .height]
         glass.appearance = NSAppearance(named: .darkAqua)
         container.addSubview(glass)
 
+        // Charcoal backing
+        let backing = CharcoalBackingView(frame: container.bounds)
+        backing.wantsLayer = true
+        backing.layer?.backgroundColor = darkCharcoalColor.cgColor
+        backing.autoresizingMask = [.width, .height]
+        backing.alphaValue = opacity.darkAlpha
+        glass.addSubview(backing)
+
         // Border
         container.layer?.borderWidth = 0.5
         container.layer?.borderColor = NSColor(white: 1.0, alpha: 0.3).cgColor
 
-        // ── Search field at the top ──
-        let searchY = h - 40
-        let field = NSTextField(frame: NSRect(x: 12, y: searchY, width: w - 24, height: 32))
+        // Title
+        let titleLabel = NSTextField(labelWithString: "Open")
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = .white
+        titleLabel.frame = NSRect(x: 12, y: h - 30, width: w - 24, height: 18)
+        container.addSubview(titleLabel)
+
+        // Search field
+        let searchH: CGFloat = 28
+        let searchY = h - 42 - searchH
+        let field = NSTextField(string: "")
+        field.cell = VerticallyCenteredTextFieldCell(textCell: "")
+        field.frame = NSRect(x: 10, y: searchY, width: w - 20, height: searchH)
         field.placeholderAttributedString = NSAttributedString(
             string: "Search directories...",
             attributes: [
                 .foregroundColor: NSColor(white: 1.0, alpha: 0.45),
-                .font: NSFont.systemFont(ofSize: 14, weight: .regular)
+                .font: NSFont.systemFont(ofSize: 12, weight: .regular)
             ]
         )
-        field.font = NSFont.systemFont(ofSize: 14, weight: .regular)
+        field.font = NSFont.systemFont(ofSize: 12, weight: .regular)
         field.textColor = .white
-        field.backgroundColor = NSColor(white: 1.0, alpha: 0.08)
         field.isBordered = false
         field.isBezeled = false
-        field.drawsBackground = true
+        field.drawsBackground = false
         field.focusRingType = .none
         field.wantsLayer = true
-        field.layer?.cornerRadius = 12
+        field.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.08).cgColor
+        field.layer?.cornerRadius = 8
         field.layer?.masksToBounds = true
         field.delegate = self
         field.target = self
@@ -94,22 +118,8 @@ class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NST
         container.addSubview(field)
         searchField = field
 
-        // ── Path label at the bottom ──
-        let pathLbl = NSTextField(labelWithString: "")
-        pathLbl.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
-        pathLbl.textColor = NSColor(white: 1.0, alpha: 0.5)
-        pathLbl.wantsLayer = true
-        pathLbl.layer?.cornerRadius = 6
-        pathLbl.layer?.borderWidth = 0.5
-        pathLbl.layer?.borderColor = NSColor(white: 1.0, alpha: 0.15).cgColor
-        pathLbl.frame = NSRect(x: 12, y: 10, width: w - 24, height: 22)
-        pathLbl.lineBreakMode = .byTruncatingMiddle
-        container.addSubview(pathLbl)
-        pathLabel = pathLbl
-        updatePathLabel()
-
-        // ── Table view — between search and path label ──
-        let tableBottom: CGFloat = 40
+        // Table view
+        let tableBottom: CGFloat = 8
         let tableTop = searchY - 6
         let tableH = tableTop - tableBottom
         let sv = NSScrollView(frame: NSRect(x: 0, y: tableBottom, width: w, height: tableH))
@@ -124,8 +134,8 @@ class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NST
         tv.backgroundColor = .clear
         tv.gridStyleMask = []
         tv.selectionHighlightStyle = .regular
-        tv.rowHeight = 36
-        tv.intercellSpacing = NSSize(width: 0, height: 2)
+        tv.rowHeight = 28
+        tv.intercellSpacing = NSSize(width: 0, height: 1)
         tv.dataSource = self
         tv.delegate = self
         tv.appearance = NSAppearance(named: .darkAqua)
@@ -165,7 +175,176 @@ class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NST
         }
     }
 
+    /// Show the picker as a floating panel adjacent to the rail.
+    func showAsPanel(relativeTo railPanel: NSPanel, projectsDir: String) {
+        dismiss()
+
+        basePath = NSHomeDirectory()  // Allow navigating the whole home directory
+        currentPath = projectsDir     // Start at the projects directory
+
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: projectsDir) {
+            try? fm.createDirectory(atPath: projectsDir, withIntermediateDirectories: true)
+        }
+
+        loadEntries()
+
+        let w: CGFloat = 240
+        let h: CGFloat = 380
+
+        // Position next to the rail
+        let railFrame = railPanel.frame
+        let isRight = UserDefaults.standard.string(forKey: "crystalRailSide") == "right"
+        let x = isRight ? railFrame.minX - w - 8 : railFrame.maxX + 8
+        let y = railFrame.midY - h / 2
+
+        let p = NSPanel(
+            contentRect: NSRect(x: x, y: y, width: w, height: h),
+            styleMask: [.nonactivatingPanel, .borderless],
+            backing: .buffered,
+            defer: false
+        )
+        p.isFloatingPanel = true
+        p.level = .floating
+        p.backgroundColor = .clear
+        p.isOpaque = false
+        p.hasShadow = true
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 12
+        container.layer?.masksToBounds = true
+
+        // Glass background — respects opacity slider
+        let savedOpacity = UserDefaults.standard.double(forKey: "windowOpacity")
+        let sliderVal = savedOpacity > 0.01 ? savedOpacity : 0.5
+        let opacity = opacityFromSlider(CGFloat(sliderVal))
+
+        let glass = NSVisualEffectView(frame: container.bounds)
+        glass.material = .hudWindow
+        glass.alphaValue = opacity.glassAlpha
+        glass.blendingMode = .behindWindow
+        glass.state = .active
+        glass.autoresizingMask = [.width, .height]
+        glass.appearance = NSAppearance(named: .darkAqua)
+        container.addSubview(glass)
+
+        let backing = CharcoalBackingView(frame: container.bounds)
+        backing.wantsLayer = true
+        backing.layer?.backgroundColor = darkCharcoalColor.cgColor
+        backing.autoresizingMask = [.width, .height]
+        backing.alphaValue = opacity.darkAlpha
+        glass.addSubview(backing)
+
+        container.layer?.borderWidth = 0.5
+        container.layer?.borderColor = NSColor(white: 1.0, alpha: 0.3).cgColor
+
+        // Title
+        let titleLabel = NSTextField(labelWithString: "Open")
+        titleLabel.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
+        titleLabel.textColor = .white
+        titleLabel.frame = NSRect(x: 12, y: h - 30, width: w - 24, height: 18)
+        container.addSubview(titleLabel)
+
+        // Search field
+        let searchH: CGFloat = 28
+        let searchY = h - 42 - searchH
+        let placeholder = "Search directories..."
+        let field = NSTextField(string: "")
+        field.cell = VerticallyCenteredTextFieldCell(textCell: "")
+        field.frame = NSRect(x: 10, y: searchY, width: w - 20, height: searchH)
+        field.placeholderAttributedString = NSAttributedString(
+            string: placeholder,
+            attributes: [
+                .foregroundColor: NSColor(white: 1.0, alpha: 0.45),
+                .font: NSFont.systemFont(ofSize: 12, weight: .regular)
+            ]
+        )
+        field.font = NSFont.systemFont(ofSize: 12, weight: .regular)
+        field.textColor = .white
+        field.isBordered = false
+        field.isBezeled = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.wantsLayer = true
+        field.layer?.backgroundColor = NSColor(white: 1.0, alpha: 0.08).cgColor
+        field.layer?.cornerRadius = 8
+        field.layer?.masksToBounds = true
+        field.delegate = self
+        field.target = self
+        field.action = #selector(searchSubmitted(_:))
+        container.addSubview(field)
+        searchField = field
+
+        // Table view
+        let tableBottom: CGFloat = 8
+        let tableTop = searchY - 6
+        let tableH = tableTop - tableBottom
+
+        let sv = NSScrollView(frame: NSRect(x: 0, y: tableBottom, width: w, height: tableH))
+        sv.hasVerticalScroller = true
+        sv.hasHorizontalScroller = false
+        sv.autohidesScrollers = true
+        sv.borderType = .noBorder
+        sv.drawsBackground = false
+
+        let tv = NSTableView()
+        tv.headerView = nil
+        tv.backgroundColor = .clear
+        tv.gridStyleMask = []
+        tv.selectionHighlightStyle = .regular
+        tv.rowHeight = 28
+        tv.intercellSpacing = NSSize(width: 0, height: 1)
+        tv.dataSource = self
+        tv.delegate = self
+        tv.appearance = NSAppearance(named: .darkAqua)
+        tv.doubleAction = #selector(rowDoubleClicked)
+        tv.target = self
+
+        let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
+        col.width = w
+        tv.addTableColumn(col)
+
+        sv.documentView = tv
+        container.addSubview(sv)
+        scrollView = sv
+        tableView = tv
+
+        p.contentView = container
+        p.orderFrontRegardless()
+        p.makeKey()
+        p.makeFirstResponder(field)
+
+        floatingPanel = p
+        overlay = container
+
+        // Dismiss on click outside
+        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            self?.dismiss()
+            self?.onDismiss?()
+        }
+
+        tv.reloadData()
+        if !filtered.isEmpty {
+            tv.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
+        }
+    }
+
     func dismiss() {
+        if let monitor = clickMonitor {
+            NSEvent.removeMonitor(monitor)
+            clickMonitor = nil
+        }
+        if let panel = floatingPanel {
+            floatingPanel = nil
+            overlay = nil
+            panel.orderOut(nil)
+            searchField = nil
+            tableView = nil
+            scrollView = nil
+            pathLabel = nil
+            return
+        }
         guard let ov = overlay else { return }
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.15
@@ -180,7 +359,7 @@ class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NST
         pathLabel = nil
     }
 
-    var isVisible: Bool { overlay != nil }
+    var isVisible: Bool { overlay != nil || floatingPanel != nil }
 
     // MARK: - Data
 
@@ -191,7 +370,8 @@ class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NST
         // Parent directory — only if we've navigated deeper than base
         if currentPath != basePath {
             let parent = (currentPath as NSString).deletingLastPathComponent
-            entries.append(DirEntry(name: ".. (Parent Directory)", path: parent, isDirectory: true, isParent: true))
+            let parentName = (parent as NSString).lastPathComponent
+            entries.append(DirEntry(name: parentName, path: parent, isDirectory: true, isParent: true))
         }
 
         if let items = try? fm.contentsOfDirectory(atPath: currentPath) {
@@ -338,34 +518,41 @@ class DirectoryPicker: NSObject, NSTextFieldDelegate, NSTableViewDataSource, NST
         guard row < filtered.count else { return nil }
         let entry = filtered[row]
 
-        let rowH: CGFloat = 36
+        let rowH: CGFloat = 28
         let cell = NSView(frame: NSRect(x: 0, y: 0, width: tableView.bounds.width, height: rowH))
 
-        // Icon — Lucide icons for folders, arrow for parent, file icon for files
-        let iconSize: CGFloat = 18
+        // Icon
+        let iconSize: CGFloat = 14
         let iconY = (rowH - iconSize) / 2
         if entry.isParent {
-            let iconLabel = NSTextField(labelWithString: "\u{2191}")
-            iconLabel.font = NSFont.systemFont(ofSize: 15)
-            iconLabel.textColor = NSColor(white: 1.0, alpha: 0.5)
-            iconLabel.frame = NSRect(x: 16, y: iconY, width: 24, height: iconSize)
-            cell.addSubview(iconLabel)
-        } else if let img = LucideIcons.render(
-            name: entry.isDirectory ? "folder" : "file",
-            size: iconSize,
-            color: entry.isDirectory ? NSColor(white: 1.0, alpha: 0.7) : NSColor(white: 1.0, alpha: 0.4)
-        ) {
-            let iconView = NSImageView(frame: NSRect(x: 16, y: iconY, width: iconSize, height: iconSize))
-            iconView.image = img
-            cell.addSubview(iconView)
+            if let img = LucideIcons.render(name: "corner-left-up", size: iconSize, color: NSColor(white: 1.0, alpha: 0.5)) {
+                let iconView = NSImageView(frame: NSRect(x: 10, y: iconY, width: iconSize, height: iconSize))
+                iconView.image = img
+                cell.addSubview(iconView)
+            }
+        } else {
+            // Check for project config with custom icon/color
+            var iconName = entry.isDirectory ? "folder" : "file"
+            var iconColor = entry.isDirectory ? NSColor(white: 1.0, alpha: 0.7) : NSColor(white: 1.0, alpha: 0.4)
+
+            if entry.isDirectory, let config = ProjectConfig.load(from: entry.path) {
+                if let name = config.icon { iconName = name }
+                if let hex = config.color, let color = NSColor(hex: hex) { iconColor = color }
+            }
+
+            if let img = LucideIcons.render(name: iconName, size: iconSize, color: iconColor) {
+                let iconView = NSImageView(frame: NSRect(x: 10, y: iconY, width: iconSize, height: iconSize))
+                iconView.image = img
+                cell.addSubview(iconView)
+            }
         }
 
         // Name
         let nameLabel = NSTextField(labelWithString: entry.name)
-        nameLabel.font = NSFont.systemFont(ofSize: 14, weight: entry.isDirectory ? .medium : .regular)
+        nameLabel.font = NSFont.systemFont(ofSize: 12, weight: entry.isDirectory ? .medium : .regular)
         nameLabel.textColor = entry.isDirectory ? .white : NSColor(white: 1.0, alpha: 0.5)
         nameLabel.lineBreakMode = .byTruncatingTail
-        nameLabel.frame = NSRect(x: 48, y: (rowH - 20) / 2, width: tableView.bounds.width - 64, height: 20)
+        nameLabel.frame = NSRect(x: 30, y: (rowH - 16) / 2, width: tableView.bounds.width - 42, height: 16)
         cell.addSubview(nameLabel)
 
         return cell

@@ -43,6 +43,10 @@ extension TerminalWindowController {
             !($0 is NSVisualEffectView) && !($0 is CharcoalBackingView)
         }
 
+        // Hide shadow and traffic lights during flip
+        window.hasShadow = false
+        window.standardWindowButton(.closeButton)?.superview?.isHidden = true
+
         container.layer?.cornerRadius = 0
         container.layer?.backgroundColor = NSColor(white: 0.08, alpha: 1.0).cgColor
 
@@ -60,15 +64,21 @@ extension TerminalWindowController {
         }
         container.addSubview(settings)
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             container.layer?.cornerRadius = 16
             container.layer?.backgroundColor = nil
+            self?.window.hasShadow = true
+            self?.window.standardWindowButton(.closeButton)?.superview?.isHidden = false
         }
     }
 
     func flipToTerminal() {
         guard let container = window.contentView, let settings = settingsView else { return }
         isShowingSettings = false
+
+        // Hide shadow and traffic lights during flip
+        window.hasShadow = false
+        window.standardWindowButton(.closeButton)?.superview?.isHidden = true
 
         container.layer?.cornerRadius = 0
         container.layer?.backgroundColor = NSColor(white: 0.08, alpha: 1.0).cgColor
@@ -92,9 +102,11 @@ extension TerminalWindowController {
             window.makeFirstResponder(session.terminalView)
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             container.layer?.cornerRadius = 16
             container.layer?.backgroundColor = nil
+            self?.window.hasShadow = true
+            self?.window.standardWindowButton(.closeButton)?.superview?.isHidden = false
         }
     }
 

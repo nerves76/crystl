@@ -496,6 +496,7 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
         submitButton?.layer?.backgroundColor = NSColor.systemGreen.withAlphaComponent(0.6).cgColor
     }
     private var panel: NSPanel?
+    private var clickMonitor: Any?
     private var nameField: NSTextField?
     private var pathField: NSTextField?
     private var iconGrid: IconGridView?
@@ -871,6 +872,11 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
 
         panel = p
         animateIn(p, cornerRadius: 12)
+
+        // Dismiss on click outside
+        clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            self?.dismiss()
+        }
     }
 
     private func animateIn(_ panel: NSPanel, cornerRadius: CGFloat) {
@@ -1070,6 +1076,10 @@ class NewProjectPanel: NSObject, NSTextFieldDelegate {
     }
 
     func dismiss() {
+        if let monitor = clickMonitor {
+            NSEvent.removeMonitor(monitor)
+            clickMonitor = nil
+        }
         guard let p = panel else { return }
         panel = nil
 
@@ -1322,6 +1332,7 @@ class CrystalRailController {
 
     func showNewProjectPanel() {
         guard let p = panel else { return }
+        NSApp.activate(ignoringOtherApps: true)
         newProjectPanel.isEditMode = false
         newProjectPanel.show(relativeTo: p)
     }

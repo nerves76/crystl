@@ -633,32 +633,32 @@ public class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation 
     }
 
     /// Opens an NSOpenPanel to pick a folder, creates a gem, and writes `cd /path` to the terminal.
+    private var railDirPicker: DirectoryPicker?
+
     private func openGemFromPicker() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Open"
-        panel.message = "Choose a directory to open as a gem"
-
-        // Default to projects directory
-        let projectsDir = UserDefaults.standard.string(forKey: "projectsDirectory") ?? ("~/Projects" as NSString).expandingTildeInPath
-        panel.directoryURL = URL(fileURLWithPath: projectsDir)
-
-        panel.begin { [weak self] response in
-            guard response == .OK, let url = panel.url else { return }
-            let path = url.path
-            guard self?.openFolder(path) == true else { return }
-
-            // Write cd command to the new session as a teaching moment
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                guard let tc = self?.terminalController,
-                      let project = tc.projects.last,
-                      let session = project.sessions.first else { return }
-                let escaped = "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
-                session.terminalView.send(txt: "cd \(escaped)\n")
-            }
+        // Dismiss if already showing
+        if let existing = railDirPicker, existing.isVisible {
+            existing.dismiss()
+            railDirPicker = nil
+            return
         }
+
+        guard let railPanel = rail?.panel else { return }
+
+        let projectsDir = UserDefaults.standard.string(forKey: "projectsDirectory")
+            ?? ("~/Projects" as NSString).expandingTildeInPath
+
+        let picker = DirectoryPicker()
+        picker.onSelect = { [weak self] path in
+            self?.railDirPicker = nil
+            guard self?.openFolder(path) == true else { return }
+        }
+        picker.onDismiss = { [weak self] in
+            self?.railDirPicker = nil
+        }
+
+        picker.showAsPanel(relativeTo: railPanel, projectsDir: projectsDir)
+        railDirPicker = picker
     }
 
     // ── Menu Actions ──

@@ -26,6 +26,7 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
     var onTabUpdated: ((UUID, String, String) -> Void)?
     var contentArea: NSView!
     var projectLabel: NSTextField!
+    private var statusFolderIcon: NSImageView?
     var claudeModePopup: NSPopUpButton?
     var projects: [ProjectTab] = []
     var selectedProjectIndex: Int = 0
@@ -221,25 +222,22 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         let labelFont = NSFont.systemFont(ofSize: 9, weight: .medium)
         let labelColor = NSColor(white: 1.0, alpha: 0.6)
 
-        // ── Project path label + clickable button (left) ──
+        // ── Folder icon (only shown on unconfigured tabs) + Project path label (left) ──
+        let folderView = NSImageView(frame: NSRect(x: 16, y: 22, width: 14, height: 14))
+        if let folderIcon = LucideIcons.render(name: "folder", size: 14, color: NSColor(white: 1.0, alpha: 0.5)) {
+            folderView.image = folderIcon
+        }
+        folderView.isHidden = true
+        statusBar.addSubview(folderView)
+        self.statusFolderIcon = folderView
+
         projectLabel = NSTextField(labelWithString: "")
         projectLabel.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
         projectLabel.textColor = NSColor(white: 1.0, alpha: 0.7)
         projectLabel.alignment = .left
         projectLabel.lineBreakMode = .byTruncatingMiddle
-        projectLabel.frame = NSRect(x: 24, y: 20, width: 188, height: 16)
+        projectLabel.frame = NSRect(x: 16, y: 20, width: 196, height: 16)
         statusBar.addSubview(projectLabel)
-
-        // Tier label (FREE / GUILD)
-        let tierText = LicenseManager.shared.tier == .pro ? "GUILD" : "FREE"
-        let tierColor = LicenseManager.shared.tier == .pro
-            ? NSColor(red: 0.55, green: 0.75, blue: 0.95, alpha: 0.6)
-            : NSColor(white: 1.0, alpha: 0.25)
-        let tierLabel = NSTextField(labelWithString: tierText)
-        tierLabel.font = NSFont.systemFont(ofSize: 8, weight: .bold)
-        tierLabel.textColor = tierColor
-        tierLabel.frame = NSRect(x: 24, y: 40, width: 30, height: 10)
-        statusBar.addSubview(tierLabel)
 
         // Invisible button on top of label to catch clicks
         let pathBtn = NSButton(frame: NSRect(x: 16, y: 16, width: 200, height: 28))
@@ -763,6 +761,12 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
         window.title = "Crystl \u{2014} \(project.title)\(sessionSuffix)"
         let cwdDisplay = (session.cwd as NSString).abbreviatingWithTildeInPath
         projectLabel.stringValue = "\(project.title)  \(cwdDisplay)"
+
+        // Show folder icon only on unconfigured tabs
+        let showFolder = project.isUnconfigured
+        statusFolderIcon?.isHidden = !showFolder
+        projectLabel.frame.origin.x = showFolder ? 34 : 16
+        projectLabel.frame.size.width = showFolder ? 178 : 196
     }
 
     /// Show or hide agent-specific UI based on the active session's detected agent.
@@ -827,6 +831,9 @@ class TerminalWindowController: NSObject, NSWindowDelegate, LocalProcessTerminal
             window.makeFirstResponder(session.terminalView)
             return
         }
+
+        // Only show picker on unconfigured tabs (new windows without a directory)
+        guard selectedProject?.isUnconfigured == true else { return }
 
         showDirectoryPicker(for: session)
     }
